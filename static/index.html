@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lorcana Price Tracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">◆</span>
+      <div>
+        <h1>Lorcana Price Tracker</h1>
+        <p class="tagline">Cardmarket · TCGPlayer · PSA 10</p>
+      </div>
+    </div>
+    <div class="search-wrap">
+      <input id="search" type="search" placeholder="Search cards by name…" autocomplete="off" />
+      <ul id="search-results" class="search-results" hidden></ul>
+    </div>
+    <div class="status-pill" id="status-pill" title="API status">…</div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar" id="sidebar">
+      <h2>Sets</h2>
+      <div class="set-list" id="set-list">
+        <p class="muted">Loading sets…</p>
+      </div>
+    </aside>
+
+    <section class="content" id="content">
+      <div class="empty-state" id="empty-state">
+        <div class="empty-icon">◇</div>
+        <h2>Track Disney Lorcana card prices</h2>
+        <p>Pick a set on the left, or search for a card above. Prices are cached locally in SQLite and snapshotted daily for trend graphs.</p>
+      </div>
+    </section>
+  </main>
+
+  <div id="card-modal" class="modal" hidden>
+    <div class="modal-card">
+      <button class="modal-close" id="modal-close" aria-label="Close">×</button>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <footer class="footer">
+    <span>Data via cardmarket-api.com (RapidAPI). Prices for reference only.</span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
