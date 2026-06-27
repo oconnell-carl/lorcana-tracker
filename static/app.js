@@ -96,9 +96,49 @@ async function loadSets() {
       el.addEventListener("click", () => selectSet(s.id, el));
       list.appendChild(el);
     });
+    // Also render landing page set grid
+    renderSetGrid();
   } catch (e) {
     list.innerHTML = `<p class="muted">Failed to load sets: ${escapeHtml(e.message)}</p>`;
   }
+}
+
+function renderSetGrid() {
+  const content = $("#content");
+  if (state.currentSetId || state.currentCardId) return; // Only show on landing
+  const sets = state.sets;
+  if (!sets.length) return;
+
+  let cards = "";
+  for (const s of sets) {
+    const logo = s.logo
+      ? `<img class="set-logo" src="${escapeHtml(s.logo)}" alt="${escapeHtml(s.name)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><div class="set-logo-placeholder" style="display:none">${escapeHtml(s.name.charAt(0))}</div>`
+      : `<div class="set-logo-placeholder">${escapeHtml(s.name.charAt(0))}</div>`;
+    const meta = [s.code, s.release_date, `${s.card_count || 0} cards`].filter(Boolean).join(" · ");
+    cards += `
+      <div class="set-card" data-set-id="${s.id}">
+        ${logo}
+        <div class="set-card-body">
+          <div class="set-card-name">${escapeHtml(s.name)}</div>
+          <div class="set-card-meta">${escapeHtml(meta)}</div>
+        </div>
+      </div>`;
+  }
+
+  content.innerHTML = `
+    <div class="landing">
+      <h2 class="landing-title">Disney Lorcana Sets</h2>
+      <p class="landing-sub">Select a set to browse cards and prices</p>
+      <div class="set-grid">${cards}</div>
+    </div>`;
+
+  $$('#content .set-card').forEach((el) =>
+    el.addEventListener("click", () => {
+      const setId = el.dataset.setId;
+      const sidebarEl = $(`.set-item[data-id="${setId}"]`);
+      selectSet(Number(setId), sidebarEl);
+    })
+  );
 }
 
 async function selectSet(id, el) {

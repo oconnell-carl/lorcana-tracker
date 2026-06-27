@@ -41,6 +41,7 @@ def init_db() -> None:
                 code          TEXT,
                 release_date  TEXT,
                 card_count    INTEGER DEFAULT 0,
+                logo          TEXT,
                 updated_at    TEXT
             );
 
@@ -81,12 +82,12 @@ def upsert_set(s: Dict[str, Any]) -> int:
     with get_conn() as conn:
         cur = conn.execute(
             """
-            INSERT INTO sets (cardmarket_id, name, code, release_date, card_count, updated_at)
-            VALUES (:cardmarket_id, :name, :code, :release_date, :card_count, :updated_at)
+            INSERT INTO sets (cardmarket_id, name, code, release_date, card_count, logo, updated_at)
+            VALUES (:cardmarket_id, :name, :code, :release_date, :card_count, :logo, :updated_at)
             ON CONFLICT(cardmarket_id) DO UPDATE SET
                 name=excluded.name, code=excluded.code,
                 release_date=excluded.release_date, card_count=excluded.card_count,
-                updated_at=excluded.updated_at
+                logo=excluded.logo, updated_at=excluded.updated_at
             """,
             {
                 "cardmarket_id": s.get("cardmarket_id") or s.get("id"),
@@ -94,6 +95,7 @@ def upsert_set(s: Dict[str, Any]) -> int:
                 "code": s.get("code"),
                 "release_date": s.get("release_date"),
                 "card_count": s.get("card_count", 0),
+                "logo": s.get("logo"),
                 "updated_at": datetime.utcnow().isoformat(),
             },
         )

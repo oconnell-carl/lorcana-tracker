@@ -25,6 +25,9 @@ from . import database
 
 log = logging.getLogger("lorcana.snapshot")
 
+# Free Lorcana API for card metadata (subtitles, etc.)
+LORCANA_API_URL = "https://api.lorcana-api.com/cards/all"
+
 # Free RapidAPI tier = 100 req/day. Each set page = 1 call.
 # 20 sets × ~1-2 pages each = ~30 calls. Keep budget for re-runs.
 DAILY_CALL_BUDGET = 90
@@ -119,6 +122,54 @@ def refresh_prices_only(api: api_mod.CardmarketAPI, budget: Budget) -> int:
     return refresh_cards_and_prices(api, budget)
 
 
+def enrich_card_names() -> int:
+    """Enrich card names with subtitles from the free lorcana-api.com.
+    e.g. 'Buzz Lightyear' -> 'Buzz Lightyear - Space Ranger'"""
+    import json
+    import urllib.request
+
+    log.info("Enriching card names from lorcana-api.com...")
+    try:
+        req = urllib.request.Request(LORCANA_API_URL, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            lorcana_cards = json.loads(resp.read())
+    except Exception as e:
+        log.warning("Failed to fetch from lorcana-api.com: %s", e)
+        return 0
+
+    # Build lookup: (set_name, card_num) -> full_name
+    lookup = {}
+    for c in lorcana_cards:
+        set_name = c.get("Set_Name", "")
+        card_num = c.get("Card_Num")
+        if set_name and card_num is not None:
+            lookup[(set_name, int(card_num))] = c.get("Name", "")
+
+    conn_raw = __import__("sqlite3").connect(database.DB_PATH)
+    conn_raw.row_factory = __import__("sqlite3").Row
+    updated = 0
+    for card in conn_raw.execute(
+        "SELECT c.id, c.name, c.card_number, s.name as set_name "
+        "FROM cards c JOIN sets s ON c.set_id = s.id"
+    ).fetchall():
+        try:
+            num = int(card["card_number"]) if card["card_number"] else None
+        except (ValueError, TypeError):
+            continue
+        key = (card["set_name"], num)
+        if key in lookup:
+            full_name = lookup[key]
+            if full_name and full_name != card["name"]:
+                conn_raw.execute(
+                    "UPDATE cards SET name = ? WHERE id = ?", (full_name, card["id"])
+                )
+                updated += 1
+    conn_raw.commit()
+    conn_raw.close()
+    log.info("Enriched %d card names.", updated)
+    return updated
+
+
 def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="Lorcana price snapshot job")
@@ -140,6 +191,8 @@ def main(argv=None) -> int:
             refresh_sets(api, budget)
         if do_all or args.cards or args.prices:
             refresh_cards_and_prices(api, budget)
+        # Always enrich names (free API, no rate limit)
+        enrich_card_names()
     except RuntimeError as e:
         log.warning("Stopped early: %s", e)
     return 0
