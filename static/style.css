@@ -241,17 +241,20 @@ table.cards tbody tr:last-child td { border-bottom: none; }
 }
 
 /* ------------------------------ Modal ---------------------------------- */
+/* Kept for backwards compat but no longer used — card detail is now a page */
 .modal {
   position: fixed;
   inset: 0;
   background: rgba(4, 6, 12, 0.72);
   backdrop-filter: blur(6px);
-  display: flex;
+  display: none;
   align-items: center;
   justify-content: center;
   z-index: 60;
   padding: 20px;
 }
+.modal[hidden] { display: none; }
+.modal.open { display: flex; }
 .modal-card {
   background: var(--bg-elev);
   border: 1px solid var(--border-strong);
@@ -269,12 +272,13 @@ table.cards tbody tr:last-child td { border-bottom: none; }
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   color: var(--text-dim);
-  width: 34px; height: 34px;
+  width: 44px; height: 44px;
   border-radius: 50%;
-  font-size: 20px;
+  font-size: 24px;
   cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   z-index: 5;
+  touch-action: manipulation;
 }
 .modal-close:hover { color: var(--text); border-color: var(--border-strong); }
 .modal-body { padding: 28px; }
@@ -359,4 +363,73 @@ table.cards tbody tr:last-child td { border-bottom: none; }
   .price-grid { grid-template-columns: 1fr; }
   .detail-img { width: 180px; }
   table.cards th:nth-child(2), table.cards td:nth-child(2) { display: none; }
+  .rarity-filters { flex-wrap: wrap; }
 }
+
+/* --------------------------- Rarity filters ----------------------------- */
+.rarity-filters {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.rarity-btn {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.12s;
+  touch-action: manipulation;
+}
+.rarity-btn:hover { color: var(--text); border-color: var(--border-strong); }
+.rarity-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0b0e14;
+}
+.rb-count { opacity: 0.6; font-weight: 400; margin-left: 3px; }
+
+/* --------------------------- Sortable headers --------------------------- */
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+  touch-action: manipulation;
+}
+th.sortable:hover { color: var(--text); }
+
+/* ------------------------- Rarity badge colors -------------------------- */
+.rarity-iconic { border-color: #fbbf24; color: #fbbf24; background: rgba(251,191,36,0.08); }
+.rarity-enchanted { border-color: #c084fc; color: #c084fc; background: rgba(192,132,252,0.08); }
+.rarity-epic { border-color: #f87171; color: #f87171; background: rgba(248,113,113,0.08); }
+.rarity-legendary { border-color: #fb923c; color: #fb923c; background: rgba(251,146,60,0.08); }
+.rarity-super_rare { border-color: #6c8cff; color: #6c8cff; background: rgba(108,140,255,0.08); }
+.rarity-promo { border-color: #34d399; color: #34d399; background: rgba(52,211,153,0.08); }
+
+/* -------------------------- Card detail page ---------------------------- */
+.card-detail-page { max-width: 900px; }
+.back-btn {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-bottom: 20px;
+  transition: all 0.12s;
+  touch-action: manipulation;
+}
+.back-btn:hover { color: var(--text); border-color: var(--border-strong); }
+.chart-title {
+  font-family: var(--font-display);
+  font-size: 16px;
+  margin: 24px 0 10px;
+  color: var(--text);
+}
+.detail-prices td { white-space: nowrap; }
+.detail-prices th { white-space: nowrap; }

@@ -79,8 +79,11 @@ def refresh_cards_and_prices(api: api_mod.CardmarketAPI, budget: Budget) -> int:
             prices = card.get("prices", {})
             cm = prices.get("cardmarket")
             if cm and cm.get("lowest_near_mint") is not None:
+                # Use EU_only price if available (closer to English-only)
+                eu_price = cm.get("lowest_near_mint_EU_only")
+                price_to_store = eu_price if eu_price is not None else cm["lowest_near_mint"]
                 database.record_snapshot(
-                    card_id, "cardmarket", cm["lowest_near_mint"],
+                    card_id, "cardmarket", price_to_store,
                     cm.get("currency", "EUR"), snapshot_date=today
                 )
                 total_snapshots += 1

@@ -7,8 +7,12 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 const state = {
   sets: [],
   currentSetId: null,
+  currentCardId: null,
   currentRange: "30d",
   chart: null,
+  sortBy: "name",
+  sortDir: "asc",
+  rarityFilter: "all",
 };
 
 const SOURCES = [
@@ -16,6 +20,18 @@ const SOURCES = [
   { key: "tcgplayer", label: "TCGPlayer (USD)", color: "#60a5fa", currency: "USD" },
   { key: "psa10", label: "PSA 10", color: "#fbbf24", currency: "—" },
 ];
+
+const RARITY_ORDER = {
+  "Iconic": 0, "Enchanted": 1, "Epic": 2, "Legendary": 3,
+  "Super_rare": 4, "rare": 5, "Uncommon": 6, "Common": 7,
+  "Promo": 8, "Oversized": 9,
+};
+
+const RARITY_LABELS = {
+  "Iconic": "Iconic", "Enchanted": "Enchanted", "Epic": "Epic",
+  "Legendary": "Legendary", "Super_rare": "Super Rare", "rare": "Rare",
+  "Uncommon": "Uncommon", "Common": "Common", "Promo": "Promo", "Oversized": "Oversized",
+};
 
 async function api(path) {
   const r = await fetch(path);
@@ -35,6 +51,10 @@ function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
+}
+
+function rarityLabel(r) {
+  return RARITY_LABELS[r] || r || "—";
 }
 
 // --------------------------------- Status -------------------------------- //
@@ -85,117 +105,241 @@ async function selectSet(id, el) {
   state.currentSetId = id;
   $$(".set-item").forEach((x) => x.classList.remove("active"));
   if (el) el.classList.add("active");
+  await renderSetView(id);
+}
+
+async function renderSetView(setId) {
   const content = $("#content");
   content.innerHTML = `<div class="muted">Loading cards…</div>`;
   try {
-    const data = await api(`/api/sets/${id}/cards`);
-    renderCardTable(data.set, data.cards);
+    const data = await api(`/api/sets/${setId}/cards`);
+    const set = data.set;
+    let cards = data.cards || [];
+
+    // Store original prices for sorting
+    cards = cards.map(c => ({
+      ...c,
+      _cmPrice: c.prices?.cardmarket?.price ?? null,
+      _tcgPrice: c.prices?.tcgplayer?.price ?? null,
+      _psaPrice: c.prices?.psa10?.price ?? null,
+    }));
+
+    state._setView = { set, cards };
+    renderCardTable(set, cards);
   } catch (e) {
     content.innerHTML = `<p class="muted">Error: ${escapeHtml(e.message)}</p>`;
   }
 }
 
+function getFilteredSortedCards() {
+  const { cards } = state._setView;
+  let filtered = cards;
+  if (state.rarityFilter !== "all") {
+    filtered = filtered.filter(c => c.rarity === state.rarityFilter);
+  }
+  const sorted = [...filtered].sort((a, b) => {
+    let cmp = 0;
+    switch (state.sortBy) {
+      case "name":
+        cmp = a.name.localeCompare(b.name);
+        break;
+      case "rarity":
+        cmp = (RARITY_ORDER[a.rarity] ?? 99) - (RARITY_ORDER[b.rarity] ?? 99);
+        break;
+      case "cardmarket":
+        cmp = (a._cmPrice ?? Infinity) - (b._cmPrice ?? Infinity);
+        break;
+      case "tcgplayer":
+        cmp = (a._tcgPrice ?? Infinity) - (b._tcgPrice ?? Infinity);
+        break;
+      case "psa10":
+        cmp = (a._psaPrice ?? Infinity) - (b._psaPrice ?? Infinity);
+        break;
+    }
+    return state.sortDir === "desc" ? -cmp : cmp;
+  });
+  return sorted;
+}
+
 function renderCardTable(set, cards) {
   const content = $("#content");
-  const count = cards.length;
+  const filtered = getFilteredSortedCards();
+  const count = filtered.length;
+
+  // Rarity filter buttons
+  const rarityCounts = {};
+  cards.forEach(c => { rarityCounts[c.rarity] = (rarityCounts[c.rarity] || 0) + 1; });
+  const rarityButtons = ["all", "Iconic", "Enchanted", "Epic", "Legendary", "Promo", "Super_rare", "rare", "Uncommon", "Common"]
+    .filter(r => r === "all" || rarityCounts[r])
+    .map(r => {
+      const label = r === "all" ? "All" : rarityLabel(r);
+      const active = state.rarityFilter === r ? "active" : "";
+      const cnt = r === "all" ? cards.length : (rarityCounts[r] || 0);
+      return `<button class="rarity-btn ${active}" data-rarity="${r}">${label} <span class="rb-count">${cnt}</span></button>`;
+    }).join("");
+
+  // Sort indicators
+  const sortIcon = (col) => {
+    if (state.sortBy !== col) return "↕";
+    return state.sortDir === "asc" ? "↑" : "↓";
+  };
+
   let rows = "";
   if (!count) {
-    content.innerHTML = `
-      <div class="section-head"><h2>${escapeHtml(set.name)}</h2><span class="count">0 cards</span></div>
-      <p class="muted">No cards cached for this set. Run <code>python -m src.snapshot --cards</code> to populate.</p>`;
-    return;
+    rows = `<tr><td colspan="6" class="na" style="text-align:center;padding:30px">No cards match this filter</td></tr>`;
+  } else {
+    for (const c of filtered) {
+      const cm = c.prices?.cardmarket;
+      const tp = c.prices?.tcgplayer;
+      const psa = c.prices?.psa10;
+      rows += `
+        <tr data-card-id="${c.id}">
+          <td><strong>${escapeHtml(c.name)}</strong></td>
+          <td class="num">${escapeHtml(c.card_number || "")}</td>
+          <td>${c.rarity ? `<span class="rarity rarity-${c.rarity.toLowerCase()}">${escapeHtml(rarityLabel(c.rarity))}</span>` : `<span class="na">—</span>`}</td>
+          <td class="price-eur">${fmtPrice(cm?.price, cm?.currency || "EUR")}</td>
+          <td class="price-usd">${fmtPrice(tp?.price, tp?.currency || "USD")}</td>
+          <td class="price-psa">${fmtPrice(psa?.price, psa?.currency || "USD")}</td>
+        </tr>`;
+    }
   }
-  for (const c of cards) {
-    const cm = c.prices?.cardmarket;
-    const tp = c.prices?.tcgplayer;
-    const psa = c.prices?.psa10;
-    rows += `
-      <tr data-card-id="${c.id}">
-        <td><strong>${escapeHtml(c.name)}</strong></td>
-        <td class="num">${escapeHtml(c.card_number || "")}</td>
-        <td>${c.rarity ? `<span class="rarity">${escapeHtml(c.rarity)}</span>` : `<span class="na">—</span>`}</td>
-        <td class="price-eur">${fmtPrice(cm?.price, cm?.currency || "EUR")}</td>
-        <td class="price-usd">${fmtPrice(tp?.price, tp?.currency || "USD")}</td>
-        <td class="price-psa">${fmtPrice(psa?.price, psa?.currency || "USD")}</td>
-      </tr>`;
-  }
+
   content.innerHTML = `
     <div class="section-head"><h2>${escapeHtml(set.name)}</h2><span class="count">${count} cards</span></div>
+    <div class="rarity-filters">${rarityButtons}</div>
     <div class="card-table-wrap">
       <table class="cards">
         <thead><tr>
-          <th>Name</th><th>#</th><th>Rarity</th>
-          <th>Cardmarket (EUR)</th><th>TCGPlayer (USD)</th><th>PSA 10</th>
+          <th class="sortable" data-sort="name">Name ${sortIcon("name")}</th>
+          <th>#</th>
+          <th class="sortable" data-sort="rarity">Rarity ${sortIcon("rarity")}</th>
+          <th class="sortable" data-sort="cardmarket">Cardmarket (EUR) ${sortIcon("cardmarket")}</th>
+          <th class="sortable" data-sort="tcgplayer">TCGPlayer (USD) ${sortIcon("tcgplayer")}</th>
+          <th class="sortable" data-sort="psa10">PSA 10 ${sortIcon("psa10")}</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
-  $$("#content tbody tr").forEach((tr) =>
-    tr.addEventListener("click", () => openCard(tr.dataset.cardId))
+
+  // Wire up row clicks
+  $$("#content tbody tr[data-card-id]").forEach((tr) =>
+    tr.addEventListener("click", () => openCardPage(tr.dataset.cardId))
+  );
+
+  // Wire up sortable headers
+  $$("#content th.sortable").forEach((th) =>
+    th.addEventListener("click", () => {
+      const col = th.dataset.sort;
+      if (state.sortBy === col) {
+        state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+      } else {
+        state.sortBy = col;
+        state.sortDir = col === "name" ? "asc" : "desc";
+      }
+      renderCardTable(state._setView.set, state._setView.cards);
+    })
+  );
+
+  // Wire up rarity filter buttons
+  $$("#content .rarity-btn").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      state.rarityFilter = btn.dataset.rarity;
+      renderCardTable(state._setView.set, state._setView.cards);
+    })
   );
 }
 
-// ------------------------------ Card detail ------------------------------ //
-async function openCard(cardId) {
-  const modal = $("#card-modal");
-  const body = $("#modal-body");
-  modal.hidden = false;
-  body.innerHTML = `<div class="muted">Loading…</div>`;
+// ------------------------------ Card detail page ------------------------------ //
+async function openCardPage(cardId) {
+  state.currentCardId = cardId;
+  const content = $("#content");
+  content.innerHTML = `<div class="muted">Loading card…</div>`;
+  // Scroll to top
+  window.scrollTo(0, 0);
   try {
     const data = await api(`/api/cards/${cardId}`);
-    await renderCardDetail(data.card, body);
+    await renderCardPage(data.card);
   } catch (e) {
-    body.innerHTML = `<p class="muted">Error: ${escapeHtml(e.message)}</p>`;
+    content.innerHTML = `<p class="muted">Error: ${escapeHtml(e.message)}</p>`;
   }
 }
 
-async function renderCardDetail(card, body) {
+async function renderCardPage(card) {
+  const content = $("#content");
   const cm = card.prices?.cardmarket;
   const tp = card.prices?.tcgplayer;
   const psa = card.prices?.psa10;
   const img = card.image_url
-    ? `<img class="detail-img" src="${escapeHtml(card.image_url)}" alt="${escapeHtml(card.name)}" onerror="this.classList.add('empty');this.alt='No image';" />`
+    ? `<img class="detail-img" src="${escapeHtml(card.image_url)}" alt="${escapeHtml(card.name)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><div class="detail-img empty" style="display:none">No image available</div>`
     : `<div class="detail-img empty">No image</div>`;
 
-  body.innerHTML = `
-    <div class="detail-head">
-      ${img}
-      <div class="detail-info">
-        <h2>${escapeHtml(card.name)}</h2>
-        <div class="sub">
-          ${escapeHtml(card.set_name || "—")} · #${escapeHtml(card.card_number || "—")}
-          ${card.rarity ? ` · <span class="rarity">${escapeHtml(card.rarity)}</span>` : ""}
-        </div>
-        <div class="price-grid">
-          <div class="price-card">
-            <div class="pc-label">Cardmarket</div>
-            <div class="pc-value eur">${fmtPrice(cm?.price, cm?.currency || "EUR")}</div>
-            <div class="pc-foot">${cm?.date ? `as of ${cm.date}` : "EUR · lowest NM"}</div>
+  const setName = card.set_name || state.sets.find(s => s.id === card.set_id)?.name || "—";
+
+  content.innerHTML = `
+    <div class="card-detail-page">
+      <button class="back-btn" id="back-btn">← Back to ${escapeHtml(setName)}</button>
+      <div class="detail-head">
+        ${img}
+        <div class="detail-info">
+          <h2>${escapeHtml(card.name)}</h2>
+          <div class="sub">
+            ${escapeHtml(setName)} · #${escapeHtml(card.card_number || "—")}
+            ${card.rarity ? ` · <span class="rarity rarity-${card.rarity.toLowerCase()}">${escapeHtml(rarityLabel(card.rarity))}</span>` : ""}
           </div>
-          <div class="price-card">
-            <div class="pc-label">TCGPlayer</div>
-            <div class="pc-value usd">${fmtPrice(tp?.price, tp?.currency || "USD")}</div>
-            <div class="pc-foot">${tp?.date ? `as of ${tp.date}` : "USD · market"}</div>
-          </div>
-          <div class="price-card">
-            <div class="pc-label">PSA 10</div>
-            <div class="pc-value psa">${fmtPrice(psa?.price, psa?.currency || "USD")}</div>
-            <div class="pc-foot">${psa?.date ? `as of ${psa.date}` : "graded"}</div>
+          <div class="price-grid">
+            <div class="price-card">
+              <div class="pc-label">Cardmarket</div>
+              <div class="pc-value eur">${fmtPrice(cm?.price, cm?.currency || "EUR")}</div>
+              <div class="pc-foot">${cm?.date ? `as of ${cm.date}` : "EUR · lowest NM"}</div>
+            </div>
+            <div class="price-card">
+              <div class="pc-label">TCGPlayer</div>
+              <div class="pc-value usd">${fmtPrice(tp?.price, tp?.currency || "USD")}</div>
+              <div class="pc-foot">${tp?.date ? `as of ${tp.date}` : "USD · market"}</div>
+            </div>
+            <div class="price-card">
+              <div class="pc-label">PSA 10</div>
+              <div class="pc-value psa">${fmtPrice(psa?.price, psa?.currency || "USD")}</div>
+              <div class="pc-foot">${psa?.date ? `as of ${psa.date}` : "graded"}</div>
+            </div>
           </div>
         </div>
       </div>
+
+      <h3 class="chart-title">Price Trend</h3>
+      <div class="range-toggle" id="range-toggle">
+        <button data-range="30d" class="active">30D</button>
+        <button data-range="3m">3M</button>
+        <button data-range="6m">6M</button>
+        <button data-range="1y">1Y</button>
+        <button data-range="all">All</button>
+      </div>
+      <div class="chart-wrap"><canvas id="price-chart"></canvas></div>
+      <div class="legend" id="chart-legend"></div>
+
+      <h3 class="chart-title">Price Details</h3>
+      <div class="card-table-wrap">
+        <table class="cards detail-prices">
+          <thead><tr>
+            <th>Source</th><th>Price</th><th>Currency</th><th>As of</th>
+          </tr></thead>
+          <tbody>
+            ${cm ? `<tr><td>Cardmarket (lowest NM, English)</td><td class="price-eur">${fmtPrice(cm?.price, cm?.currency || "EUR")}</td><td>${escapeHtml(cm?.currency || "EUR")}</td><td>${escapeHtml(cm?.date || "—")}</td></tr>` : ""}
+            ${tp ? `<tr><td>TCGPlayer (market)</td><td class="price-usd">${fmtPrice(tp?.price, tp?.currency || "USD")}</td><td>${escapeHtml(tp?.currency || "USD")}</td><td>${escapeHtml(tp?.date || "—")}</td></tr>` : ""}
+            ${psa ? `<tr><td>PSA 10 (graded)</td><td class="price-psa">${fmtPrice(psa?.price, psa?.currency || "USD")}</td><td>${escapeHtml(psa?.currency || "—")}</td><td>${escapeHtml(psa?.date || "—")}</td></tr>` : ""}
+            ${!cm && !tp && !psa ? `<tr><td colspan="4" class="na" style="text-align:center;padding:20px">No price data yet</td></tr>` : ""}
+          </tbody>
+        </table>
+      </div>
     </div>
-    <div class="range-toggle" id="range-toggle">
-      <button data-range="30d" class="active">30D</button>
-      <button data-range="3m">3M</button>
-      <button data-range="6m">6M</button>
-      <button data-range="1y">1Y</button>
-      <button data-range="all">All</button>
-    </div>
-    <div class="chart-wrap"><canvas id="price-chart"></canvas></div>
-    <div class="legend" id="chart-legend"></div>
   `;
 
+  // Back button
+  $("#back-btn").addEventListener("click", () => {
+    if (state.currentSetId) renderSetView(state.currentSetId);
+  });
+
+  // Range toggle
   $$("#range-toggle button").forEach((b) =>
     b.addEventListener("click", () => {
       $$("#range-toggle button").forEach((x) => x.classList.remove("active"));
@@ -211,7 +355,9 @@ async function renderCardDetail(card, body) {
 async function loadChart(cardId) {
   const canvas = $("#price-chart");
   const legendEl = $("#chart-legend");
-  const wrap = canvas.parentElement;
+  const wrap = canvas?.parentElement;
+  if (!canvas || !wrap) return;
+
   try {
     const data = await api(`/api/cards/${cardId}/history?range=${state.currentRange}`);
     const series = data.series || {};
@@ -221,7 +367,6 @@ async function loadChart(cardId) {
       legendEl.innerHTML = "";
       return;
     }
-    // Use the union of dates.
     const dateSet = new Set();
     sources.forEach((s) => series[s.key].forEach((p) => dateSet.add(p.date)));
     const labels = Array.from(dateSet).sort();
@@ -301,7 +446,7 @@ function initSearch() {
         results.hidden = false;
         $$("#search-results li").forEach((li) =>
           li.addEventListener("click", () => {
-            openCard(li.dataset.id);
+            openCardPage(li.dataset.id);
             results.hidden = true;
             input.value = "";
           })
@@ -316,27 +461,9 @@ function initSearch() {
   });
 }
 
-// --------------------------------- Modal --------------------------------- //
-function initModal() {
-  $("#modal-close").addEventListener("click", () => {
-    $("#card-modal").hidden = true;
-    if (state.chart) { state.chart.destroy(); state.chart = null; }
-  });
-  $("#card-modal").addEventListener("click", (e) => {
-    if (e.target.id === "card-modal") {
-      $("#card-modal").hidden = true;
-      if (state.chart) { state.chart.destroy(); state.chart = null; }
-    }
-  });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") $("#card-modal").hidden = true;
-  });
-}
-
 // ---------------------------------- Boot --------------------------------- //
 window.addEventListener("DOMContentLoaded", () => {
   loadStatus();
   loadSets();
   initSearch();
-  initModal();
 });
