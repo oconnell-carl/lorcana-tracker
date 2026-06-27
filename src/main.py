@@ -121,20 +121,8 @@ def card_history(
     history = database.get_history(card_id, source=source, days=days)
 
     # If no local history, attempt to fetch trend from API and backfill.
-    if not history and api_mod.get_api().available and card.get("cardmarket_id"):
-        try:
-            prices = api_mod.get_api().get_card_prices(card["cardmarket_id"])
-            trend = prices.get("trend") or []
-            for point in trend:
-                if point.get("date") and point.get("price") is not None:
-                    database.record_snapshot(
-                        card_id, "cardmarket", point["price"],
-                        (prices.get("cardmarket") or {}).get("currency", "EUR"),
-                        snapshot_date=point["date"][:10],
-                    )
-            history = database.get_history(card_id, source=source, days=days)
-        except api_mod.APIError as e:
-            log.warning("API error fetching trend: %s", e)
+    # NOTE: The free-tier API doesn't provide historical trend data.
+    # Price history is built up locally from daily snapshots.
 
     # Group by source for the frontend.
     series: Dict[str, List[Dict[str, Any]]] = {}
