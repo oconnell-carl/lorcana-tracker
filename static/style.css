@@ -368,8 +368,22 @@ table.cards tbody tr:last-child td { border-bottom: none; }
   .content { padding: 18px 16px; }
   .price-grid { grid-template-columns: 1fr; }
   .detail-img { width: 180px; }
-  table.cards th:nth-child(2), table.cards td:nth-child(2) { display: none; }
   .rarity-filters { flex-wrap: wrap; }
+  /* Card table: horizontal scroll on mobile */
+  .card-table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  table.cards { min-width: 900px; }
+  table.cards th, table.cards td { padding: 10px 12px; font-size: 13px; }
+  /* Sticky first column for name */
+  table.cards td:first-child, table.cards th:first-child {
+    position: sticky;
+    left: 0;
+    background: var(--bg-elev);
+    z-index: 2;
+  }
+  table.cards thead th:first-child { background: var(--bg-elev-2); z-index: 3; }
 }
 
 /* --------------------------- Rarity filters ----------------------------- */
