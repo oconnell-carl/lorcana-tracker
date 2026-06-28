@@ -112,23 +112,22 @@ function renderSetGrid() {
   let cards = "";
   for (const s of sets) {
     const logo = s.logo
-      ? `<img class="set-logo" src="${escapeHtml(s.logo)}" alt="${escapeHtml(s.name)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><div class="set-logo-placeholder" style="display:none">${escapeHtml(s.name.charAt(0))}</div>`
+      ? `<img class="set-logo" src="${escapeHtml(s.logo)}" alt="${escapeHtml(s.name)}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><div class="set-logo-placeholder" style="display:none">${escapeHtml(s.name.charAt(0))}</div>`
       : `<div class="set-logo-placeholder">${escapeHtml(s.name.charAt(0))}</div>`;
-    const meta = [s.code, s.release_date, `${s.card_count || 0} cards`].filter(Boolean).join(" · ");
+    const cardCount = s.card_count || 0;
     cards += `
       <div class="set-card" data-set-id="${s.id}">
-        ${logo}
+        <div class="set-card-banner">${logo}</div>
         <div class="set-card-body">
           <div class="set-card-name">${escapeHtml(s.name)}</div>
-          <div class="set-card-meta">${escapeHtml(meta)}</div>
+          <div class="set-card-meta">${cardCount} cards</div>
         </div>
       </div>`;
   }
 
   content.innerHTML = `
     <div class="landing">
-      <h2 class="landing-title">Disney Lorcana Sets</h2>
-      <p class="landing-sub">Select a set to browse cards and prices</p>
+      <h2 class="landing-title">Lorcana Sets</h2>
       <div class="set-grid">${cards}</div>
     </div>`;
 
