@@ -237,6 +237,30 @@ table.cards tbody tr:last-child td { border-bottom: none; }
 .supply-cell { font-size: 13px; }
 .na { color: var(--text-faint); }
 
+/* Card thumbnails in table */
+.thumb-cell { width: 40px; padding: 6px 8px; text-align: center; }
+.thumb-col { width: 40px; }
+.card-thumb {
+  width: 36px;
+  height: 50px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  display: block;
+}
+.card-thumb-placeholder {
+  width: 36px;
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  font-size: 16px;
+  background: var(--bg-elev-2);
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
 .rarity {
   font-size: 11px;
   padding: 3px 8px;
@@ -374,16 +398,22 @@ table.cards tbody tr:last-child td { border-bottom: none; }
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
   }
-  table.cards { min-width: 900px; }
+  table.cards { min-width: 1000px; }
   table.cards th, table.cards td { padding: 10px 12px; font-size: 13px; }
-  /* Sticky first column for name */
-  table.cards td:first-child, table.cards th:first-child {
+  /* Sticky first two columns (thumb + name) for mobile */
+  table.cards td:first-child, table.cards th:first-child,
+  table.cards td:nth-child(2), table.cards th:nth-child(2) {
     position: sticky;
     left: 0;
     background: var(--bg-elev);
     z-index: 2;
   }
+  table.cards td:nth-child(2), table.cards th:nth-child(2) {
+    left: 48px;
+  }
   table.cards thead th:first-child { background: var(--bg-elev-2); z-index: 3; }
+  table.cards thead th:nth-child(2) { background: var(--bg-elev-2); z-index: 3; }
+}
 }
 
 /* --------------------------- Rarity filters ----------------------------- */

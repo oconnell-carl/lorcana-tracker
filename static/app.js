@@ -250,7 +250,7 @@ function renderCardTable(set, cards) {
 
   let rows = "";
   if (!count) {
-    rows = `<tr><td colspan="11" class="na" style="text-align:center;padding:30px">No cards match this filter</td></tr>`;
+    rows = `<tr><td colspan="12" class="na" style="text-align:center;padding:30px">No cards match this filter</td></tr>`;
   } else {
     for (const c of filtered) {
       const cm = c.prices?.cardmarket;
@@ -259,8 +259,12 @@ function renderCardTable(set, cards) {
       const vs7d = pctDiff(cm?.price, cm?.avg_7d);
       const vs30d = pctDiff(cm?.price, cm?.avg_30d);
       const supply = cm?.available_items;
+      const thumb = c.image_url
+        ? `<img class="card-thumb" src="${escapeHtml(c.image_url)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><span class="card-thumb-placeholder" style="display:none">◇</span>`
+        : `<span class="card-thumb-placeholder">◇</span>`;
       rows += `
         <tr data-card-id="${c.id}">
+          <td class="thumb-cell">${thumb}</td>
           <td><strong>${escapeHtml(c.name)}</strong></td>
           <td class="num">${escapeHtml(c.card_number || "")}</td>
           <td>${c.rarity ? `<span class="rarity rarity-${c.rarity.toLowerCase()}">${escapeHtml(rarityLabel(c.rarity))}</span>` : `<span class="na">—</span>`}</td>
@@ -282,6 +286,7 @@ function renderCardTable(set, cards) {
     <div class="card-table-wrap">
       <table class="cards">
         <thead><tr>
+          <th class="thumb-col"></th>
           <th class="sortable" data-sort="name">Name ${sortIcon("name")}</th>
           <th>#</th>
           <th class="sortable" data-sort="rarity">Rarity ${sortIcon("rarity")}</th>
