@@ -13,6 +13,8 @@ from fastapi.staticfiles import StaticFiles
 
 from . import api as api_mod
 from . import database
+from . import snapshot as snapshot_mod
+from . import targeted_snapshot as targeted_snapshot_mod
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -148,6 +150,27 @@ def status() -> Dict[str, Any]:
         "set_count": len(database.get_sets()),
         "card_count": len(database.all_card_ids()),
     }
+
+
+@app.get("/api/snapshot/targeted")
+def run_targeted_snapshot(budget: int = 95) -> Dict[str, Any]:
+    """Run the targeted snapshot job (priority rarities only)."""
+    import io
+    import contextlib
+    
+    log_buffer = io.StringIO()
+    handler = logging.StreamHandler(log_buffer)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger = logging.getLogger("lorcana.targeted_snapshot")
+    logger.addHandler(handler)
+    
+    try:
+        result = targeted_snapshot_mod.main(["--budget", str(budget)])
+        logger.removeHandler(handler)
+        return {"status": "ok", "return_code": result, "logs": log_buffer.getvalue()}
+    except Exception as e:
+        logger.removeHandler(handler)
+        return {"status": "error", "error": str(e), "logs": log_buffer.getvalue()}
 
 
 def main() -> None:

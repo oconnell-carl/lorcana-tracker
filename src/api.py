@@ -62,11 +62,21 @@ class CardmarketAPI:
         if r.status_code == 200:
             return r.json()
         elif r.status_code == 429:
-            log.warning("Rate limited by RapidAPI (429)")
-            raise APIError("rate limited (429)")
-        else:
-            log.warning("API %s -> %d: %s", path, r.status_code, r.text[:200])
-            return None
+            log.warning("Rate limited by RapidAPI (429), waiting 60s...")
+            time.sleep(60)
+            # Retry once
+            try:
+                r = self.client.get(url, headers=self._headers(), params=params)
+            except httpx.HTTPError as e:
+                log.warning("Retry failed: %s", e)
+                return None
+            if r.status_code == 200:
+                return r.json()
+            elif r.status_code == 429:
+                raise APIError("rate limited (429) after retry")
+            else:
+                log.warning("API %s -> %d: %s", path, r.status_code, r.text[:200])
+                return None
 
     # ------------------------------- Sets ---------------------------------- #
     def get_sets(self) -> List[Dict[str, Any]]:

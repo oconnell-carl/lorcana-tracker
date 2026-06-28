@@ -24,5 +24,25 @@ A local web app for tracking Disney Lorcana card prices across Cardmarket (EU) a
 4. `python src/main.py`
 5. Open http://localhost:8000
 
+## Daily Snapshots
+
+### Full snapshot (all cards, all rarities)
+```bash
+python -m src.snapshot
+```
+
+### Targeted snapshot (priority rarities: Iconic, Enchanted, Promo)
+```bash
+python -m src.targeted_snapshot
+python -m src.targeted_snapshot --budget 95  # custom API call budget
+python -m src.targeted_snapshot --dry-run    # preview without API calls
+```
+
+The targeted snapshot is budget-aware and prioritises fetching prices for
+high-value rarities (Iconic, Enchanted, Promo) within the free-tier daily
+limit of 100 API calls. It fetches only the pages where these cards live
+(typically pages 10-13 of each set) before using remaining budget on other
+pages.
+
 ## Data Storage
 Price snapshots are stored in SQLite (`data/prices.db`). A daily cron job fetches current prices for all tracked cards and stores them for historical trending.

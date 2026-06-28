@@ -235,6 +235,15 @@ def all_card_ids() -> List[int]:
         return [r["id"] for r in rows]
 
 
+def get_rarities_in_set(set_id: int) -> List[str]:
+    """Return list of distinct rarities present in a set."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT rarity FROM cards WHERE set_id=?", (set_id,)
+        ).fetchall()
+        return [r["rarity"] for r in rows if r["rarity"]]
+
+
 def snapshot_exists(date_str: str) -> int:
     """How many snapshots exist for a given date (used to skip duplicate runs)."""
     with get_conn() as conn:
