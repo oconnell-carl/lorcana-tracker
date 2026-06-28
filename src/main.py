@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from . import api as api_mod
 from . import database
@@ -24,6 +25,21 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
 
 app = FastAPI(title="Lorcana Price Tracker", version="0.1.0")
+
+# Disable ETag/caching for HTML pages so JS/CSS cache-busters work
+class NoCacheHTMLMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.endswith(".html"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            if "etag" in response.headers:
+                del response.headers["etag"]
+            if "last-modified" in response.headers:
+                del response.headers["last-modified"]
+        return response
+
+app.add_middleware(NoCacheHTMLMiddleware)
 
 RANGE_DAYS = {"30d": 30, "3m": 90, "6m": 180, "1y": 365, "all": None}
 
