@@ -162,6 +162,9 @@ async function renderSetView(setId) {
       _cmPrice: c.prices?.cardmarket?.price ?? null,
       _tcgPrice: c.prices?.tcgplayer?.price ?? null,
       _psaPrice: c.prices?.psa10?.price ?? null,
+      _avg7d: c.prices?.cardmarket?.avg_7d ?? null,
+      _avg30d: c.prices?.cardmarket?.avg_30d ?? null,
+      _availItems: c.prices?.cardmarket?.available_items ?? null,
     }));
 
     state._setView = { set, cards };
@@ -169,6 +172,18 @@ async function renderSetView(setId) {
   } catch (e) {
     content.innerHTML = `<p class="muted">Error: ${escapeHtml(e.message)}</p>`;
   }
+}
+
+function pctDiff(current, average) {
+  if (current == null || average == null || average === 0) return null;
+  return ((current - average) / average) * 100;
+}
+
+function fmtPct(val) {
+  if (val == null || !isFinite(val)) return `<span class="na">—</span>`;
+  const sign = val >= 0 ? "+" : "";
+  const cls = val > 5 ? "pct-up" : val < -5 ? "pct-down" : "pct-flat";
+  return `<span class="${cls}">${sign}${val.toFixed(1)}%</span>`;
 }
 
 function getFilteredSortedCards() {
@@ -194,6 +209,15 @@ function getFilteredSortedCards() {
         break;
       case "psa10":
         cmp = (a._psaPrice ?? Infinity) - (b._psaPrice ?? Infinity);
+        break;
+      case "avg7d":
+        cmp = (a._avg7d ?? Infinity) - (b._avg7d ?? Infinity);
+        break;
+      case "avg30d":
+        cmp = (a._avg30d ?? Infinity) - (b._avg30d ?? Infinity);
+        break;
+      case "supply":
+        cmp = (a._availItems ?? -Infinity) - (b._availItems ?? -Infinity);
         break;
     }
     return state.sortDir === "desc" ? -cmp : cmp;
@@ -226,20 +250,28 @@ function renderCardTable(set, cards) {
 
   let rows = "";
   if (!count) {
-    rows = `<tr><td colspan="6" class="na" style="text-align:center;padding:30px">No cards match this filter</td></tr>`;
+    rows = `<tr><td colspan="11" class="na" style="text-align:center;padding:30px">No cards match this filter</td></tr>`;
   } else {
     for (const c of filtered) {
       const cm = c.prices?.cardmarket;
       const tp = c.prices?.tcgplayer;
       const psa = c.prices?.psa10;
+      const vs7d = pctDiff(cm?.price, cm?.avg_7d);
+      const vs30d = pctDiff(cm?.price, cm?.avg_30d);
+      const supply = cm?.available_items;
       rows += `
         <tr data-card-id="${c.id}">
           <td><strong>${escapeHtml(c.name)}</strong></td>
           <td class="num">${escapeHtml(c.card_number || "")}</td>
           <td>${c.rarity ? `<span class="rarity rarity-${c.rarity.toLowerCase()}">${escapeHtml(rarityLabel(c.rarity))}</span>` : `<span class="na">—</span>`}</td>
           <td class="price-eur">${fmtPrice(cm?.price, cm?.currency || "EUR")}</td>
+          <td class="price-avg">${fmtPrice(cm?.avg_7d, cm?.currency || "EUR")}</td>
+          <td class="price-avg">${fmtPrice(cm?.avg_30d, cm?.currency || "EUR")}</td>
+          <td class="pct-cell">${fmtPct(vs7d)}</td>
+          <td class="pct-cell">${fmtPct(vs30d)}</td>
           <td class="price-usd">${fmtPrice(tp?.price, tp?.currency || "USD")}</td>
           <td class="price-psa">${fmtPrice(psa?.price, psa?.currency || "USD")}</td>
+          <td class="num supply-cell" title="Number of listings on Cardmarket">${supply != null ? supply : `<span class="na">—</span>`}</td>
         </tr>`;
     }
   }
@@ -253,9 +285,14 @@ function renderCardTable(set, cards) {
           <th class="sortable" data-sort="name">Name ${sortIcon("name")}</th>
           <th>#</th>
           <th class="sortable" data-sort="rarity">Rarity ${sortIcon("rarity")}</th>
-          <th class="sortable" data-sort="cardmarket">Cardmarket (EUR) ${sortIcon("cardmarket")}</th>
-          <th class="sortable" data-sort="tcgplayer">TCGPlayer (USD) ${sortIcon("tcgplayer")}</th>
+          <th class="sortable" data-sort="cardmarket">CM Price ${sortIcon("cardmarket")}</th>
+          <th class="sortable" data-sort="avg7d">7D Avg ${sortIcon("avg7d")}</th>
+          <th class="sortable" data-sort="avg30d">30D Avg ${sortIcon("avg30d")}</th>
+          <th>% vs 7D</th>
+          <th>% vs 30D</th>
+          <th class="sortable" data-sort="tcgplayer">TCGPlayer ${sortIcon("tcgplayer")}</th>
           <th class="sortable" data-sort="psa10">PSA 10 ${sortIcon("psa10")}</th>
+          <th class="sortable" data-sort="supply">Supply ${sortIcon("supply")}</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>

@@ -79,7 +79,11 @@ def _store_card_with_prices(card: Dict, set_id: int, today: str, stats: Dict) ->
         price_to_store = eu_price if eu_price is not None else cm["lowest_near_mint"]
         database.record_snapshot(
             card_id, "cardmarket", price_to_store,
-            cm.get("currency", "EUR"), snapshot_date=today
+            cm.get("currency", "EUR"), snapshot_date=today,
+            avg_7d=cm.get("7d_average"),
+            avg_30d=cm.get("30d_average"),
+            available_items=cm.get("available_items"),
+            lowest_near_mint_raw=cm.get("lowest_near_mint"),
         )
         stats["snapshots_stored"] += 1
 

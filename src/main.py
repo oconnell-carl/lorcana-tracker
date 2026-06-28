@@ -53,7 +53,15 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 def _attach_prices(card: Dict[str, Any]) -> Dict[str, Any]:
     prices = database.get_latest_prices(card["id"])
     card["prices"] = {
-        src: {"price": snap["price"], "currency": snap["currency"], "date": snap["snapshot_date"]}
+        src: {
+            "price": snap["price"],
+            "currency": snap["currency"],
+            "date": snap["snapshot_date"],
+            "avg_7d": snap.get("avg_7d"),
+            "avg_30d": snap.get("avg_30d"),
+            "available_items": snap.get("available_items"),
+            "lowest_near_mint_raw": snap.get("lowest_near_mint_raw"),
+        }
         for src, snap in prices.items()
     }
     return card
@@ -131,6 +139,8 @@ def card_history(
     for h in history:
         series.setdefault(h["source"], []).append({
             "date": h["snapshot_date"], "price": h["price"], "currency": h["currency"],
+            "avg_7d": h.get("avg_7d"), "avg_30d": h.get("avg_30d"),
+            "available_items": h.get("available_items"),
         })
     return {"card_id": card_id, "range": range, "series": series}
 

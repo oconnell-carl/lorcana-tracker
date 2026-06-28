@@ -29,8 +29,15 @@ def get_conn() -> Iterable[sqlite3.Connection]:
         conn.close()
 
 
+def _add_column_if_missing(conn, table: str, column: str, definition: str) -> None:
+    """Add a column to a table if it doesn't already exist (ALTER TABLE migration)."""
+    cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def init_db() -> None:
-    """Create all tables if they don't exist."""
+    """Create all tables if they don't exist, then run migrations."""
     with get_conn() as conn:
         conn.executescript(
             """
@@ -73,6 +80,11 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_snap_date ON price_snapshots(snapshot_date);
             """
         )
+        # Migrations: add enriched price columns to price_snapshots
+        _add_column_if_missing(conn, "price_snapshots", "avg_7d", "REAL")
+        _add_column_if_missing(conn, "price_snapshots", "avg_30d", "REAL")
+        _add_column_if_missing(conn, "price_snapshots", "available_items", "INTEGER")
+        _add_column_if_missing(conn, "price_snapshots", "lowest_near_mint_raw", "REAL")
 
 
 # --------------------------------------------------------------------------- #
@@ -181,19 +193,28 @@ def search_cards(query: str, limit: int = 20) -> List[Dict[str, Any]]:
 # Price snapshots
 # --------------------------------------------------------------------------- #
 def record_snapshot(card_id: int, source: str, price: Optional[float], currency: str,
-                    snapshot_date: Optional[str] = None) -> None:
+                    snapshot_date: Optional[str] = None,
+                    avg_7d: Optional[float] = None,
+                    avg_30d: Optional[float] = None,
+                    available_items: Optional[int] = None,
+                    lowest_near_mint_raw: Optional[float] = None) -> None:
     if price is None:
         return
     snapshot_date = snapshot_date or datetime.utcnow().date().isoformat()
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO price_snapshots (card_id, source, price, currency, snapshot_date)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO price_snapshots (card_id, source, price, currency, snapshot_date,
+                                         avg_7d, avg_30d, available_items, lowest_near_mint_raw)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(card_id, source, snapshot_date) DO UPDATE SET
-                price=excluded.price, currency=excluded.currency
+                price=excluded.price, currency=excluded.currency,
+                avg_7d=excluded.avg_7d, avg_30d=excluded.avg_30d,
+                available_items=excluded.available_items,
+                lowest_near_mint_raw=excluded.lowest_near_mint_raw
             """,
-            (card_id, source, price, currency, snapshot_date),
+            (card_id, source, price, currency, snapshot_date,
+             avg_7d, avg_30d, available_items, lowest_near_mint_raw),
         )
 
 
@@ -215,7 +236,9 @@ def get_latest_prices(card_id: int) -> Dict[str, Dict[str, Any]]:
 
 
 def get_history(card_id: int, source: Optional[str] = None, days: Optional[int] = None) -> List[Dict[str, Any]]:
-    sql = "SELECT source, price, currency, snapshot_date FROM price_snapshots WHERE card_id=?"
+    sql = ("SELECT source, price, currency, snapshot_date, avg_7d, avg_30d, "
+           "available_items, lowest_near_mint_raw "
+           "FROM price_snapshots WHERE card_id=?")
     params: List[Any] = [card_id]
     if source:
         sql += " AND source=?"

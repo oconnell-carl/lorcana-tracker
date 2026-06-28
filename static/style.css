@@ -229,6 +229,12 @@ table.cards tbody tr:last-child td { border-bottom: none; }
 .price-eur { color: var(--eur); font-variant-numeric: tabular-nums; font-weight: 600; }
 .price-usd { color: var(--usd); font-variant-numeric: tabular-nums; font-weight: 600; }
 .price-psa { color: var(--psa); font-variant-numeric: tabular-nums; font-weight: 600; }
+.price-avg { color: var(--text-dim); font-variant-numeric: tabular-nums; font-size: 13px; }
+.pct-cell { font-variant-numeric: tabular-nums; font-size: 13px; white-space: nowrap; }
+.pct-up { color: var(--danger); font-weight: 600; }
+.pct-down { color: var(--eur); font-weight: 600; }
+.pct-flat { color: var(--text-faint); }
+.supply-cell { font-size: 13px; }
 .na { color: var(--text-faint); }
 
 .rarity {
