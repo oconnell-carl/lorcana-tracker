@@ -30,7 +30,7 @@ LORCANA_API_URL = "https://api.lorcana-api.com/cards/all"
 
 # Free RapidAPI tier = 100 req/day. Each set page = 1 call.
 # 20 sets × ~1-2 pages each = ~30 calls. Keep budget for re-runs.
-DAILY_CALL_BUDGET = 90
+DAILY_CALL_BUDGET = 95
 
 
 class Budget:

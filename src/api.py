@@ -80,23 +80,32 @@ class CardmarketAPI:
 
     # ------------------------------- Sets ---------------------------------- #
     def get_sets(self) -> List[Dict[str, Any]]:
-        """Fetch all Lorcana sets/episodes."""
-        data = self._get("/lorcana/episodes")
-        if data is None:
-            return []
-        items = data.get("data", []) if isinstance(data, dict) else data
+        """Fetch all Lorcana sets/episodes, handling pagination."""
         out: List[Dict[str, Any]] = []
-        for it in items:
-            if not isinstance(it, dict):
-                continue
-            out.append({
-                "cardmarket_id": it.get("id"),
-                "name": it.get("name", ""),
-                "code": it.get("code") or "",
-                "release_date": it.get("released_at") or it.get("release_date"),
-                "card_count": it.get("cards_total") or it.get("cards_printed_total") or 0,
-                "logo": it.get("logo"),
-            })
+        page = 1
+        while True:
+            params = {"page": page} if page > 1 else None
+            data = self._get("/lorcana/episodes", params=params)
+            if data is None:
+                break
+            items = data.get("data", []) if isinstance(data, dict) else data
+            if not items:
+                break
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                out.append({
+                    "cardmarket_id": it.get("id"),
+                    "name": it.get("name", ""),
+                    "code": it.get("code") or "",
+                    "release_date": it.get("released_at") or it.get("release_date"),
+                    "card_count": it.get("cards_total") or it.get("cards_printed_total") or 0,
+                    "logo": it.get("logo"),
+                })
+            if len(items) < 20:
+                break
+            page += 1
+            time.sleep(0.3)
         return out
 
     # ------------------------------ Cards ---------------------------------- #
