@@ -61,7 +61,7 @@ def refresh_cards_and_prices(api: api_mod.CardmarketAPI, budget: Budget) -> int:
     sets = database.get_sets()
     total_cards = 0
     total_snapshots = 0
-    today = datetime.utcnow().date().isoformat()
+    today = datetime.now(timezone.utc).date().isoformat()
 
     for s in sets:
         cm_id = s["cardmarket_id"]

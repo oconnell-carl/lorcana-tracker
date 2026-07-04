@@ -23,7 +23,8 @@ BASE_URL = os.environ.get(
     "RAPIDAPI_BASE_URL", "https://cardmarket-api-tcg.p.rapidapi.com"
 )
 DEFAULT_HOST = os.environ.get("RAPIDAPI_HOST", "cardmarket-api-tcg.p.rapidapi.com")
-TIMEOUT = 30.0
+DEFAULT_TIMEOUT = 30.0
+TIMEOUT = DEFAULT_TIMEOUT  # backwards compat
 
 
 class APIError(RuntimeError):
@@ -31,10 +32,11 @@ class APIError(RuntimeError):
 
 
 class CardmarketAPI:
-    def __init__(self) -> None:
+    def __init__(self, timeout: float = DEFAULT_TIMEOUT) -> None:
         self.key = os.environ.get("RAPIDAPI_KEY", "").strip()
         self.host = os.environ.get("RAPIDAPI_HOST", DEFAULT_HOST).strip()
-        self.client = httpx.Client(timeout=TIMEOUT)
+        self.client = httpx.Client(timeout=timeout)
+        self._timeout = timeout
 
     @property
     def available(self) -> bool:

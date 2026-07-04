@@ -6,3 +6,4 @@ data/*.db-journal
 .venv/
 node_modules/
 .DS_Store
+src/lorcana.db

@@ -3,7 +3,7 @@
 import os
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 DB_PATH = os.environ.get(
@@ -108,7 +108,7 @@ def upsert_set(s: Dict[str, Any]) -> int:
                 "release_date": s.get("release_date"),
                 "card_count": s.get("card_count", 0),
                 "logo": s.get("logo"),
-                "updated_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
             },
         )
         if cur.lastrowid and cur.rowcount == 1:
@@ -152,7 +152,7 @@ def upsert_card(c: Dict[str, Any]) -> int:
                 "rarity": c.get("rarity"),
                 "set_id": c.get("set_id"),
                 "image_url": c.get("image_url"),
-                "updated_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
             },
         )
         if cur.lastrowid and cur.rowcount == 1:
@@ -200,7 +200,7 @@ def record_snapshot(card_id: int, source: str, price: Optional[float], currency:
                     lowest_near_mint_raw: Optional[float] = None) -> None:
     if price is None:
         return
-    snapshot_date = snapshot_date or datetime.utcnow().date().isoformat()
+    snapshot_date = snapshot_date or datetime.now(timezone.utc).date().isoformat()
     with get_conn() as conn:
         conn.execute(
             """
@@ -245,7 +245,7 @@ def get_history(card_id: int, source: Optional[str] = None, days: Optional[int] 
         params.append(source)
     if days:
         sql += " AND snapshot_date >= ?"
-        params.append((datetime.utcnow() - timedelta(days=days)).date().isoformat())
+        params.append((datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat())
     sql += " ORDER BY snapshot_date ASC"
     with get_conn() as conn:
         rows = conn.execute(sql, params).fetchall()
