@@ -41,7 +41,7 @@ body {
 /* ----------------------------- Top bar -------------------------------- */
 .topbar {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto auto 1fr auto;
   align-items: center;
   gap: 24px;
   padding: 16px 28px;
@@ -51,6 +51,35 @@ body {
   position: sticky;
   top: 0;
   z-index: 30;
+}
+
+.tabs {
+  display: inline-flex;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px;
+  gap: 4px;
+}
+.tab {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  padding: 7px 18px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--font-body);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  touch-action: manipulation;
+  white-space: nowrap;
+}
+.tab:hover { color: var(--text); }
+.tab.active {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #0b0e14;
+  box-shadow: 0 0 18px var(--accent-glow);
 }
 
 .brand { display: flex; align-items: center; gap: 14px; }
@@ -136,6 +165,7 @@ body {
   gap: 0;
   min-height: 0;
 }
+.layout.full-width { grid-template-columns: 1fr; }
 .sidebar {
   border-right: 1px solid var(--border);
   padding: 22px 16px;
@@ -192,8 +222,14 @@ body {
 .empty-state p { max-width: 460px; line-height: 1.6; margin: 0; }
 
 /* ------------------------------ Cards ---------------------------------- */
-.section-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 18px; }
-.section-head h2 { font-family: var(--font-display); margin: 0; font-size: 22px; }
+.section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 14px;
+  margin-bottom: 18px;
+}
+.section-head h2 { font-family: var(--font-display); margin: 0; font-size: 22px; flex: 1; min-width: 0; }
 .section-head .count { color: var(--text-faint); font-size: 13px; }
 
 .card-table-wrap {
@@ -386,6 +422,7 @@ table.cards tbody tr:last-child td { border-bottom: none; }
 @media (max-width: 860px) {
   .topbar { grid-template-columns: 1fr; gap: 12px; padding: 14px 16px; }
   .brand { justify-content: center; }
+  .tabs { justify-self: center; }
   .search-wrap { max-width: none; }
   .layout { grid-template-columns: 1fr; }
   .sidebar { border-right: none; border-bottom: 1px solid var(--border); max-height: 240px; }
@@ -420,7 +457,6 @@ table.cards tbody tr:last-child td { border-bottom: none; }
   }
   table.cards thead th:first-child { background: var(--bg-elev-2); z-index: 3; }
   table.cards thead th:nth-child(2) { background: var(--bg-elev-2); z-index: 3; }
-}
 }
 
 /* --------------------------- Rarity filters ----------------------------- */
@@ -465,6 +501,171 @@ th.sortable:hover { color: var(--text); }
 .rarity-legendary { border-color: #fb923c; color: #fb923c; background: rgba(251,146,60,0.08); }
 .rarity-super_rare { border-color: #6c8cff; color: #6c8cff; background: rgba(108,140,255,0.08); }
 .rarity-promo { border-color: #34d399; color: #34d399; background: rgba(52,211,153,0.08); }
+
+/* ----------------------- Product type badges ---------------------------- */
+.product-type {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  color: var(--text-dim);
+  background: var(--bg-elev-2);
+  white-space: nowrap;
+  display: inline-block;
+}
+.type-booster-box,
+.type-japanese-booster-box,
+.type-simplified-chinese-booster-box { border-color: #fbbf24; color: #fbbf24; background: rgba(251,191,36,0.08); }
+.type-booster-box-case { border-color: #f59e0b; color: #f59e0b; background: rgba(245,158,11,0.08); }
+.type-booster-pack { border-color: #84cc16; color: #84cc16; background: rgba(132,204,22,0.08); }
+.type-sleeved-booster { border-color: #a3e635; color: #a3e635; background: rgba(163,230,53,0.08); }
+.type-starter-deck,
+.type-2-starter-deck-set,
+.type-3-starter-deck-set,
+.type-starter-deck-display,
+.type-collection-starter-set { border-color: #6c8cff; color: #6c8cff; background: rgba(108,140,255,0.08); }
+.type-illumineer-s-trove { border-color: #c084fc; color: #c084fc; background: rgba(192,132,252,0.08); }
+.type-prerelease-box,
+.type-prerelease-pack { border-color: #f87171; color: #f87171; background: rgba(248,113,113,0.08); }
+.type-gift-box,
+.type-gift-set,
+.type-collector-s-set { border-color: #ec4899; color: #ec4899; background: rgba(236,72,153,0.08); }
+.type-participation-booster,
+.type-event-prize-booster,
+.type-special-promotion-pack { border-color: #34d399; color: #34d399; background: rgba(52,211,153,0.08); }
+
+/* CSS class name normaliser for product types */
+.type-default { border-color: var(--border-strong); color: var(--text-dim); background: var(--bg-elev-2); }
+
+/* ---------------------- Sealed product detail ---------------------------- */
+.sealed-detail-page { max-width: 900px; }
+.sealed-detail-head { display: flex; gap: 26px; flex-wrap: wrap; margin-bottom: 26px; }
+.sealed-detail-img {
+  width: 220px;
+  height: 220px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  object-fit: contain;
+  padding: 10px;
+}
+.sealed-detail-img.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+.sealed-detail-info { flex: 1; min-width: 240px; }
+.sealed-detail-info h2 { font-family: var(--font-display); margin: 0 0 4px; font-size: 24px; }
+.sealed-detail-info .sub { color: var(--text-faint); font-size: 13px; margin-bottom: 18px; }
+.sealed-external-links {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.sealed-external-links a {
+  font-size: 12px;
+  color: var(--text-dim);
+  text-decoration: none;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  transition: color 0.15s, border-color 0.15s;
+}
+.sealed-external-links a:hover { color: var(--text); border-color: var(--border-strong); }
+
+.country-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+.country-card {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+}
+.country-card .cc-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-faint);
+  margin-bottom: 4px;
+}
+.country-card .cc-value {
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--eur);
+}
+.country-card .cc-eu {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--accent);
+  margin-left: 6px;
+  vertical-align: middle;
+}
+@media (max-width: 700px) {
+  .country-grid { grid-template-columns: repeat(2, 1fr); }
+  .sealed-detail-img { width: 100%; max-width: 220px; }
+}
+
+.sealed-thumb {
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  padding: 2px;
+  display: block;
+}
+.sealed-thumb-placeholder {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  font-size: 18px;
+  background: var(--bg-elev-2);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.sealed-thumb-cell { width: 48px; padding: 6px 8px; text-align: center; }
+.sealed-thumb-col { width: 48px; }
+
+.sealed-snapshot-btn {
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s;
+  touch-action: manipulation;
+}
+.sealed-snapshot-btn:hover { border-color: var(--accent); }
+.sealed-snapshot-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.sealed-snapshot-result {
+  margin-top: 16px;
+  padding: 14px 18px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  max-height: 240px;
+  overflow-y: auto;
+  grid-column: 1 / -1;
+}
 
 /* -------------------------- Card detail page ---------------------------- */
 .card-detail-page { max-width: 900px; }

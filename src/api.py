@@ -203,6 +203,64 @@ class CardmarketAPI:
             return None
         return self._normalise_card(data)
 
+    # --------------------------- Sealed products -------------------------- #
+    def get_sealed_products(self) -> List[Dict[str, Any]]:
+        """Fetch all Lorcana sealed products, handling pagination.
+
+        Returns normalised sealed-product dicts with prices inline.
+        Each page returns 20 products; there are ~8 pages (~140 products total).
+        """
+        all_products: List[Dict[str, Any]] = []
+        page = 1
+        while True:
+            params = {"page": page} if page > 1 else None
+            data = self._get("/lorcana/products", params=params)
+            if data is None:
+                break
+            items = data.get("data", []) if isinstance(data, dict) else data
+            if not items:
+                break
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                all_products.append(self._normalise_sealed_product(it))
+            if len(items) < 20:
+                break
+            page += 1
+            time.sleep(0.3)
+        return all_products
+
+    def _normalise_sealed_product(self, it: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalise a sealed product dict from the API response."""
+        prices = it.get("prices") or {}
+        cm_prices = prices.get("cardmarket") or {}
+        links = it.get("links") or {}
+        episode = it.get("episode") or {}
+
+        return {
+            "cardmarket_id": it.get("cardmarket_id") or it.get("id"),
+            "name": it.get("name", ""),
+            "slug": it.get("slug"),
+            "product_type": _derive_sealed_product_type(it.get("name", "")),
+            "set_name": episode.get("name") if isinstance(episode, dict) else None,
+            "image_url": it.get("image") or it.get("image_url"),
+            "tcggo_url": it.get("tcggo_url"),
+            "cardmarket_url": links.get("cardmarket"),
+            "prices": {
+                "cardmarket": {
+                    "currency": cm_prices.get("currency", "EUR"),
+                    "lowest": cm_prices.get("lowest"),
+                    "lowest_EU_only": cm_prices.get("lowest_EU_only"),
+                    "lowest_DE": cm_prices.get("lowest_DE"),
+                    "lowest_FR": cm_prices.get("lowest_FR"),
+                    "lowest_IT": cm_prices.get("lowest_IT"),
+                    "30d_average": cm_prices.get("30d_average"),
+                    "7d_average": cm_prices.get("7d_average"),
+                    "available_items": cm_prices.get("available_items"),
+                },
+            },
+        }
+
 
 # Module-level singleton
 _api: Optional[CardmarketAPI] = None
@@ -213,3 +271,54 @@ def get_api() -> CardmarketAPI:
     if _api is None:
         _api = CardmarketAPI()
     return _api
+
+
+# Ordered list of (regex, product_type) — first match wins.
+# Order matters: more specific patterns before more generic ones
+# (e.g. "Booster Box Case" before "Booster Box").
+# Apostrophe class matches both straight (') and curly (’) characters.
+_APH = "['\u2019]"  # straight + curly apostrophe
+_SEALED_TYPE_RULES: List[tuple] = [
+    (r"\bsimplified chinese (?:slim )?booster box\b", "Simplified Chinese Booster Box"),
+    (r"\bjapanese booster box\b", "Japanese Booster Box"),
+    (r"\bbooster box case\b", "Booster Box Case"),
+    (r"\bbooster box\b", "Booster Box"),
+    (r"\bsleeved booster\b", "Sleeved Booster"),
+    (r"\bparticipation booster\b", "Participation Booster"),
+    (r"\bevent prize booster\b", "Event Prize Booster"),
+    (r"\bspecial promotion pack\b", "Special Promotion Pack"),
+    (r"\bprerelease box\b", "Prerelease Box"),
+    (r"\bprerelease pack\b", "Prerelease Pack"),
+    (r"\bcollection starter set\b", "Collection Starter Set"),
+    (rf"\bcollector{_APH}s set\b", "Collector's Set"),
+    (r"\bgift box\b", "Gift Box"),
+    (r"\bgift set\b", "Gift Set"),
+    (r"\billustrated starter deck\b", "Starter Deck"),
+    (rf"\bvictor{_APH}s pack\b", "Starter Deck"),
+    (r"\bcollector set\b", "Collector's Set"),
+    (r"\b(?:2[- ]player )?starter set\b", "Starter Deck"),
+    (r"\b3 starter deck set\b", "3 Starter Deck Set"),
+    (r"\b2 starter deck set\b", "2 Starter Deck Set"),
+    (r"\bstarter deck display\b", "Starter Deck Display"),
+    (r"\bstarter deck\b", "Starter Deck"),
+    (r"\billuminee.*trove\b", "Illumineer's Trove"),
+    (r"\bbooster pack\b", "Booster Pack"),
+    (r"\bbooster\b", "Booster Pack"),
+    (r"\bdeck\b", "Starter Deck"),
+]
+
+
+def _derive_sealed_product_type(name: str) -> str:
+    """Derive a product type from a sealed product name.
+
+    Returns the most specific matching type, or 'Other' if nothing matches.
+    """
+    import re
+
+    if not name:
+        return "Other"
+    lower = name.lower()
+    for pattern, ptype in _SEALED_TYPE_RULES:
+        if re.search(pattern, lower):
+            return ptype
+    return "Other"

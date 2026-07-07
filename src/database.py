@@ -78,6 +78,43 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_snap_card ON price_snapshots(card_id);
             CREATE INDEX IF NOT EXISTS idx_snap_date ON price_snapshots(snapshot_date);
+
+            CREATE TABLE IF NOT EXISTS sealed_products (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                cardmarket_id INTEGER UNIQUE,
+                name          TEXT NOT NULL,
+                slug          TEXT,
+                product_type  TEXT,
+                set_name      TEXT,
+                image_url     TEXT,
+                tcggo_url     TEXT,
+                cardmarket_url TEXT,
+                created_at    TEXT DEFAULT (datetime('now')),
+                updated_at    TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_sealed_type ON sealed_products(product_type);
+            CREATE INDEX IF NOT EXISTS idx_sealed_set ON sealed_products(set_name);
+            CREATE INDEX IF NOT EXISTS idx_sealed_name ON sealed_products(name);
+
+            CREATE TABLE IF NOT EXISTS sealed_price_snapshots (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id      INTEGER NOT NULL REFERENCES sealed_products(id) ON DELETE CASCADE,
+                source          TEXT NOT NULL,           -- 'cardmarket'
+                price           REAL,
+                currency        TEXT,
+                lowest_EU_only  REAL,
+                lowest_DE       REAL,
+                lowest_FR       REAL,
+                lowest_IT       REAL,
+                avg_7d          REAL,
+                avg_30d         REAL,
+                available_items INTEGER,
+                snapshot_date   TEXT NOT NULL,           -- YYYY-MM-DD
+                created_at      TEXT DEFAULT (datetime('now')),
+                UNIQUE(product_id, source, snapshot_date)
+            );
+            CREATE INDEX IF NOT EXISTS idx_sealed_snap_product ON sealed_price_snapshots(product_id);
+            CREATE INDEX IF NOT EXISTS idx_sealed_snap_date ON sealed_price_snapshots(snapshot_date);
             """
         )
         # Migrations: add enriched price columns to price_snapshots
@@ -279,3 +316,175 @@ def snapshot_exists(date_str: str) -> int:
 if __name__ == "__main__":
     init_db()
     print(f"Initialized database at {DB_PATH}")
+
+
+# --------------------------------------------------------------------------- #
+# Sealed products
+# --------------------------------------------------------------------------- #
+def upsert_sealed_product(p: Dict[str, Any]) -> int:
+    with get_conn() as conn:
+        cm_id = p.get("cardmarket_id") or p.get("id")
+        cur = conn.execute(
+            """
+            INSERT INTO sealed_products
+                (cardmarket_id, name, slug, product_type, set_name, image_url,
+                 tcggo_url, cardmarket_url, updated_at)
+            VALUES (:cardmarket_id, :name, :slug, :product_type, :set_name, :image_url,
+                    :tcggo_url, :cardmarket_url, :updated_at)
+            ON CONFLICT(cardmarket_id) DO UPDATE SET
+                name=excluded.name, slug=excluded.slug,
+                product_type=excluded.product_type, set_name=excluded.set_name,
+                image_url=excluded.image_url, tcggo_url=excluded.tcggo_url,
+                cardmarket_url=excluded.cardmarket_url, updated_at=excluded.updated_at
+            """,
+            {
+                "cardmarket_id": cm_id,
+                "name": p.get("name", ""),
+                "slug": p.get("slug"),
+                "product_type": p.get("product_type"),
+                "set_name": p.get("set_name"),
+                "image_url": p.get("image_url"),
+                "tcggo_url": p.get("tcggo_url"),
+                "cardmarket_url": p.get("cardmarket_url"),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        if cur.lastrowid and cur.rowcount == 1:
+            return cur.lastrowid
+        row = conn.execute(
+            "SELECT id FROM sealed_products WHERE cardmarket_id=?", (cm_id,)
+        ).fetchone()
+        return row["id"]
+
+
+def get_sealed_products(
+    product_type: Optional[str] = None,
+    query: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Return sealed products, optionally filtered by type / search."""
+    sql = "SELECT * FROM sealed_products WHERE 1=1"
+    params: List[Any] = []
+    if product_type and product_type != "all":
+        sql += " AND product_type=?"
+        params.append(product_type)
+    if query:
+        sql += " AND (name LIKE ? COLLATE NOCASE OR set_name LIKE ? COLLATE NOCASE)"
+        q = f"%{query}%"
+        params.extend([q, q])
+    sql += " ORDER BY product_type, name"
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_sealed_product(product_id: int) -> Optional[Dict[str, Any]]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM sealed_products WHERE id=?", (product_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def search_sealed_products(query: str, limit: int = 20) -> List[Dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM sealed_products WHERE name LIKE ? COLLATE NOCASE "
+            "ORDER BY name LIMIT ?",
+            (f"%{query}%", limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def record_sealed_snapshot(
+    product_id: int,
+    source: str,
+    price: Optional[float],
+    currency: Optional[str] = None,
+    lowest_EU_only: Optional[float] = None,
+    lowest_DE: Optional[float] = None,
+    lowest_FR: Optional[float] = None,
+    lowest_IT: Optional[float] = None,
+    avg_7d: Optional[float] = None,
+    avg_30d: Optional[float] = None,
+    available_items: Optional[int] = None,
+    snapshot_date: Optional[str] = None,
+) -> None:
+    if price is None:
+        return
+    snapshot_date = snapshot_date or datetime.now(timezone.utc).date().isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO sealed_price_snapshots
+                (product_id, source, price, currency, lowest_EU_only, lowest_DE,
+                 lowest_FR, lowest_IT, avg_7d, avg_30d, available_items, snapshot_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(product_id, source, snapshot_date) DO UPDATE SET
+                price=excluded.price, currency=excluded.currency,
+                lowest_EU_only=excluded.lowest_EU_only, lowest_DE=excluded.lowest_DE,
+                lowest_FR=excluded.lowest_FR, lowest_IT=excluded.lowest_IT,
+                avg_7d=excluded.avg_7d, avg_30d=excluded.avg_30d,
+                available_items=excluded.available_items
+            """,
+            (product_id, source, price, currency, lowest_EU_only,
+             lowest_DE, lowest_FR, lowest_IT, avg_7d, avg_30d,
+             available_items, snapshot_date),
+        )
+
+
+def get_latest_sealed_prices(product_id: int) -> Dict[str, Dict[str, Any]]:
+    """Return latest snapshot per source, e.g. {'cardmarket': {...}}."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT p.* FROM sealed_price_snapshots p
+            JOIN (
+                SELECT source, MAX(snapshot_date) AS maxd
+                FROM sealed_price_snapshots WHERE product_id=? GROUP BY source
+            ) m ON p.source=m.source AND p.snapshot_date=m.maxd
+            WHERE p.product_id=?
+            """,
+            (product_id, product_id),
+        ).fetchall()
+        return {r["source"]: dict(r) for r in rows}
+
+
+def get_sealed_history(
+    product_id: int,
+    source: Optional[str] = None,
+    days: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    sql = ("SELECT source, price, currency, snapshot_date, lowest_EU_only, lowest_DE, "
+           "lowest_FR, lowest_IT, avg_7d, avg_30d, available_items "
+           "FROM sealed_price_snapshots WHERE product_id=?")
+    params: List[Any] = [product_id]
+    if source:
+        sql += " AND source=?"
+        params.append(source)
+    if days:
+        sql += " AND snapshot_date >= ?"
+        params.append((datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat())
+    sql += " ORDER BY snapshot_date ASC"
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+
+def sealed_snapshot_exists(date_str: str) -> int:
+    """How many sealed snapshots exist for a given date (used to skip duplicate runs)."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM sealed_price_snapshots WHERE snapshot_date=?",
+            (date_str,),
+        ).fetchone()
+        return row["n"]
+
+
+def get_sealed_product_types() -> List[str]:
+    """Return distinct product types in the DB (for filter UI)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT product_type FROM sealed_products "
+            "WHERE product_type IS NOT NULL ORDER BY product_type"
+        ).fetchall()
+        return [r["product_type"] for r in rows]

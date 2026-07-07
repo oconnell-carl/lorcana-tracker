@@ -5,6 +5,10 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 const state = {
+  // Active tab: 'cards' or 'sealed'
+  activeTab: "cards",
+
+  // Cards state
   sets: [],
   currentSetId: null,
   currentCardId: null,
@@ -13,6 +17,15 @@ const state = {
   sortBy: "name",
   sortDir: "asc",
   rarityFilter: "all",
+
+  // Sealed products state
+  sealedProducts: [],
+  sealedView: "list", // 'list' | 'detail'
+  currentSealedId: null,
+  sealedSortBy: "name",
+  sealedSortDir: "asc",
+  sealedTypeFilter: "all",
+  sealedTypes: [],
 };
 
 const SOURCES = [
@@ -39,6 +52,12 @@ async function api(path) {
   return r.json();
 }
 
+function typeBadgeClass(type) {
+  if (!type) return "type-default";
+  // Convert "Collector's Set" -> "type-collector-s-set"
+  return "type-" + type.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+$/, "");
+}
+
 function fmtPrice(val, cur) {
   if (val == null || val === "") return `<span class="na">—</span>`;
   const num = Number(val);
@@ -63,11 +82,11 @@ async function loadStatus() {
     const s = await api("/api/status");
     const pill = $("#status-pill");
     if (s.api_available) {
-      pill.textContent = `● Live API · ${s.set_count} sets · ${s.card_count} cards`;
+      pill.textContent = `● Live API · ${s.set_count} sets · ${s.card_count} cards · ${s.sealed_count} sealed`;
       pill.classList.add("online");
       pill.classList.remove("offline");
     } else {
-      pill.textContent = `○ Cached · ${s.set_count} sets · ${s.card_count} cards`;
+      pill.textContent = `○ Cached · ${s.set_count} sets · ${s.card_count} cards · ${s.sealed_count} sealed`;
       pill.classList.add("offline");
       pill.classList.remove("online");
     }
@@ -509,29 +528,56 @@ function initSearch() {
       results.hidden = true;
       return;
     }
+    // Search cards in the cards tab, sealed products in the sealed tab.
+    const isSealed = state.activeTab === "sealed";
     searchTimer = setTimeout(async () => {
       try {
-        const data = await api(`/api/search?q=${encodeURIComponent(q)}`);
-        const items = data.results || [];
-        if (!items.length) {
-          results.innerHTML = `<li class="muted">No matches</li>`;
+        if (isSealed) {
+          const data = await api(`/api/sealed?q=${encodeURIComponent(q)}`);
+          const items = data.products || [];
+          if (!items.length) {
+            results.innerHTML = `<li class="muted">No matches</li>`;
+            results.hidden = false;
+            return;
+          }
+          results.innerHTML = items
+            .slice(0, 12)
+            .map(
+              (p) =>
+                `<li data-id="${p.id}"><span class="r-name">${escapeHtml(p.name)}</span><span class="r-set">${escapeHtml(p.set_name || "")} · ${escapeHtml(p.product_type || "")}</span></li>`
+            )
+            .join("");
           results.hidden = false;
-          return;
+          $$("#search-results li").forEach((li) =>
+            li.addEventListener("click", () => {
+              openSealedProductPage(li.dataset.id);
+              results.hidden = true;
+              input.value = "";
+            })
+          );
+        } else {
+          const data = await api(`/api/search?q=${encodeURIComponent(q)}`);
+          const items = data.results || [];
+          if (!items.length) {
+            results.innerHTML = `<li class="muted">No matches</li>`;
+            results.hidden = false;
+            return;
+          }
+          results.innerHTML = items
+            .map(
+              (c) =>
+                `<li data-id="${c.id}"><span class="r-name">${escapeHtml(c.name)}</span><span class="r-set">${escapeHtml(c.set_name || "")} · #${escapeHtml(c.card_number || "")}</span></li>`
+            )
+            .join("");
+          results.hidden = false;
+          $$("#search-results li").forEach((li) =>
+            li.addEventListener("click", () => {
+              openCardPage(li.dataset.id);
+              results.hidden = true;
+              input.value = "";
+            })
+          );
         }
-        results.innerHTML = items
-          .map(
-            (c) =>
-              `<li data-id="${c.id}"><span class="r-name">${escapeHtml(c.name)}</span><span class="r-set">${escapeHtml(c.set_name || "")} · #${escapeHtml(c.card_number || "")}</span></li>`
-          )
-          .join("");
-        results.hidden = false;
-        $$("#search-results li").forEach((li) =>
-          li.addEventListener("click", () => {
-            openCardPage(li.dataset.id);
-            results.hidden = true;
-            input.value = "";
-          })
-        );
       } catch {
         results.hidden = true;
       }
@@ -542,9 +588,496 @@ function initSearch() {
   });
 }
 
+// ---------------------------- Tab switching ------------------------------ //
+function initTabs() {
+  $$(".tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const target = tab.dataset.tab;
+      if (target === state.activeTab) return;
+      switchTab(target);
+    });
+  });
+}
+
+function switchTab(tab) {
+  state.activeTab = tab;
+  // Update tab buttons
+  $$(".tab").forEach((t) => {
+    const isActive = t.dataset.tab === tab;
+    t.classList.toggle("active", isActive);
+    t.setAttribute("aria-selected", isActive ? "true" : "false");
+  });
+  // Update sidebar visibility (only relevant on Cards tab)
+  const sidebar = $("#sidebar");
+  sidebar.style.display = tab === "cards" ? "" : "none";
+  // Also collapse the layout grid when sidebar is hidden so content fills width
+  const layout = document.querySelector(".layout");
+  if (layout) {
+    layout.classList.toggle("full-width", tab !== "cards");
+  }
+
+  // Destroy any existing chart
+  if (state.chart) {
+    state.chart.destroy();
+    state.chart = null;
+  }
+
+  // Reset search bar placeholder
+  const search = $("#search");
+  search.placeholder = tab === "cards" ? "Search cards by name…" : "Search sealed products…";
+  search.value = "";
+  $("#search-results").hidden = true;
+
+  // Reset card-specific state when leaving
+  if (tab !== "cards") {
+    state.currentSetId = null;
+    state.currentCardId = null;
+    $$(".set-item").forEach((x) => x.classList.remove("active"));
+  }
+
+  // Reset sealed-specific state when leaving
+  if (tab !== "sealed") {
+    state.currentSealedId = null;
+    state.sealedView = "list";
+  }
+
+  // Load the active view
+  if (tab === "sealed") {
+    loadSealedProducts();
+  } else {
+    renderSetGrid();
+  }
+}
+
+// -------------------------- Sealed products ------------------------------ //
+const SEALED_SOURCES = [
+  { key: "cardmarket", label: "Cardmarket (EUR)", color: "#4ade80", currency: "EUR" },
+];
+
+async function loadSealedProducts() {
+  const content = $("#content");
+  if (state.sealedView === "detail" && state.currentSealedId) {
+    return renderSealedDetail(state.currentSealedId);
+  }
+  content.innerHTML = `<div class="muted">Loading sealed products…</div>`;
+  try {
+    const params = new URLSearchParams();
+    if (state.sealedTypeFilter && state.sealedTypeFilter !== "all") {
+      params.set("type", state.sealedTypeFilter);
+    }
+    const data = await api(`/api/sealed${params.toString() ? "?" + params.toString() : ""}`);
+    state.sealedProducts = data.products || [];
+    state.sealedTypes = data.types || [];
+    renderSealedTable();
+  } catch (e) {
+    content.innerHTML = `<p class="muted">Error loading sealed products: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function getFilteredSortedSealed() {
+  let products = state.sealedProducts;
+  // Type filter is already applied server-side via state.sealedTypeFilter, but
+  // also keep a client-side filter in case the dataset changes.
+  if (state.sealedTypeFilter && state.sealedTypeFilter !== "all") {
+    products = products.filter(p => p.product_type === state.sealedTypeFilter);
+  }
+  const sorted = [...products].sort((a, b) => {
+    const cmA = a.prices?.cardmarket || {};
+    const cmB = b.prices?.cardmarket || {};
+    let cmp = 0;
+    switch (state.sealedSortBy) {
+      case "name":
+        cmp = (a.name || "").localeCompare(b.name || "");
+        break;
+      case "type":
+        cmp = (a.product_type || "").localeCompare(b.product_type || "");
+        break;
+      case "set":
+        cmp = (a.set_name || "").localeCompare(b.set_name || "");
+        break;
+      case "price":
+        cmp = (cmA.price ?? Infinity) - (cmB.price ?? Infinity);
+        break;
+      case "avg7d":
+        cmp = (cmA.avg_7d ?? Infinity) - (cmB.avg_7d ?? Infinity);
+        break;
+      case "avg30d":
+        cmp = (cmA.avg_30d ?? Infinity) - (cmB.avg_30d ?? Infinity);
+        break;
+      case "supply":
+        cmp = (cmA.available_items ?? -Infinity) - (cmB.available_items ?? -Infinity);
+        break;
+      case "vs7d":
+        cmp = pctDiff(cmA.price, cmA.avg_7d) - pctDiff(cmB.price, cmB.avg_7d);
+        if (!isFinite(cmp)) cmp = 0;
+        break;
+      case "vs30d":
+        cmp = pctDiff(cmA.price, cmA.avg_30d) - pctDiff(cmB.price, cmB.avg_30d);
+        if (!isFinite(cmp)) cmp = 0;
+        break;
+    }
+    return state.sealedSortDir === "desc" ? -cmp : cmp;
+  });
+  return sorted;
+}
+
+function renderSealedTable() {
+  const content = $("#content");
+  const filtered = getFilteredSortedSealed();
+  const all = state.sealedProducts;
+  const count = filtered.length;
+
+  // Type filter buttons
+  const typeCounts = {};
+  all.forEach(p => {
+    const t = p.product_type || "Other";
+    typeCounts[t] = (typeCounts[t] || 0) + 1;
+  });
+  // Sort types by count descending, but keep "all" first
+  const sortedTypes = Object.entries(typeCounts).sort((a, b) => b[1] - a[1]);
+  const typeButtons = [`<button class="rarity-btn ${state.sealedTypeFilter === "all" ? "active" : ""}" data-type="all">All <span class="rb-count">${all.length}</span></button>`]
+    .concat(
+      sortedTypes.map(([t, c]) => {
+        const active = state.sealedTypeFilter === t ? "active" : "";
+        return `<button class="rarity-btn ${active}" data-type="${escapeHtml(t)}">${escapeHtml(t)} <span class="rb-count">${c}</span></button>`;
+      })
+    )
+    .join("");
+
+  const sortIcon = (col) => {
+    if (state.sealedSortBy !== col) return "↕";
+    return state.sealedSortDir === "asc" ? "↑" : "↓";
+  };
+
+  let rows = "";
+  if (!count) {
+    rows = `<tr><td colspan="9" class="na" style="text-align:center;padding:30px">No sealed products match this filter</td></tr>`;
+  } else {
+    for (const p of filtered) {
+      const cm = p.prices?.cardmarket;
+      const vs7d = pctDiff(cm?.price, cm?.avg_7d);
+      const vs30d = pctDiff(cm?.price, cm?.avg_30d);
+      const supply = cm?.available_items;
+      const thumb = p.image_url
+        ? `<img class="sealed-thumb" src="${escapeHtml(p.image_url)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><span class="sealed-thumb-placeholder" style="display:none">◇</span>`
+        : `<span class="sealed-thumb-placeholder">◇</span>`;
+      const typeClass = typeBadgeClass(p.product_type);
+      rows += `
+        <tr data-product-id="${p.id}">
+          <td class="sealed-thumb-cell">${thumb}</td>
+          <td><strong>${escapeHtml(p.name)}</strong></td>
+          <td><span class="product-type ${typeClass}">${escapeHtml(p.product_type || "—")}</span></td>
+          <td>${escapeHtml(p.set_name || "")}</td>
+          <td class="price-eur">${fmtPrice(cm?.price, cm?.currency || "EUR")}</td>
+          <td class="price-avg">${fmtPrice(cm?.avg_7d, cm?.currency || "EUR")}</td>
+          <td class="price-avg">${fmtPrice(cm?.avg_30d, cm?.currency || "EUR")}</td>
+          <td class="num supply-cell">${supply != null ? supply : `<span class="na">—</span>`}</td>
+          <td class="pct-cell">${fmtPct(vs7d)}</td>
+          <td class="pct-cell">${fmtPct(vs30d)}</td>
+        </tr>`;
+    }
+  }
+
+  content.innerHTML = `
+    <div class="section-head">
+      <h2>Sealed Products</h2>
+      <span class="count">${count} products</span>
+      <button class="sealed-snapshot-btn" id="sealed-snapshot-btn" title="Refresh all sealed product prices from Cardmarket">Refresh prices</button>
+    </div>
+    <div class="rarity-filters">${typeButtons}</div>
+    <div class="card-table-wrap">
+      <table class="cards">
+        <thead><tr>
+          <th class="sealed-thumb-col"></th>
+          <th class="sortable" data-sort="name">Product ${sortIcon("name")}</th>
+          <th class="sortable" data-sort="type">Type ${sortIcon("type")}</th>
+          <th class="sortable" data-sort="set">Set ${sortIcon("set")}</th>
+          <th class="sortable" data-sort="price">CM Lowest ${sortIcon("price")}</th>
+          <th class="sortable" data-sort="avg7d">7D Avg ${sortIcon("avg7d")}</th>
+          <th class="sortable" data-sort="avg30d">30D Avg ${sortIcon("avg30d")}</th>
+          <th class="sortable" data-sort="supply">Available ${sortIcon("supply")}</th>
+          <th class="sortable" data-sort="vs7d">% vs 7D ${sortIcon("vs7d")}</th>
+          <th class="sortable" data-sort="vs30d">% vs 30D ${sortIcon("vs30d")}</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+
+  // Row clicks -> detail page
+  $$("#content tbody tr[data-product-id]").forEach((tr) =>
+    tr.addEventListener("click", () => openSealedProductPage(tr.dataset.productId))
+  );
+
+  // Sortable headers
+  $$("#content th.sortable").forEach((th) =>
+    th.addEventListener("click", () => {
+      const col = th.dataset.sort;
+      if (state.sealedSortBy === col) {
+        state.sealedSortDir = state.sealedSortDir === "asc" ? "desc" : "asc";
+      } else {
+        state.sealedSortBy = col;
+        state.sealedSortDir = (col === "name" || col === "type" || col === "set") ? "asc" : "desc";
+      }
+      renderSealedTable();
+    })
+  );
+
+  // Type filter buttons
+  $$("#content .rarity-btn").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      state.sealedTypeFilter = btn.dataset.type;
+      renderSealedTable();
+    })
+  );
+
+  // Snapshot button
+  const snapBtn = $("#sealed-snapshot-btn");
+  if (snapBtn) {
+    snapBtn.addEventListener("click", () => triggerSealedSnapshot(snapBtn));
+  }
+}
+
+async function triggerSealedSnapshot(btn) {
+  // Save reference to the result element BEFORE async work, in case the
+  // content area gets re-rendered. We store result HTML on a hidden node
+  // and re-attach it after the table re-renders.
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Refreshing…";
+
+  // Stash progress in a hidden data store so we can find it after re-render
+  state._snapshotResultHtml = `<div class="sealed-snapshot-result">Triggering snapshot…</div>`;
+
+  // Render immediately
+  _renderSnapshotResult();
+
+  try {
+    const data = await api(`/api/sealed/snapshot?budget=10`);
+    let logs = (data.logs || "").trim();
+    if (logs.length > 4000) logs = logs.slice(-4000);
+    const status = data.status === "ok" ? "✓ Done" : "✗ Error";
+    state._snapshotResultHtml = `<div class="sealed-snapshot-result"><strong>${status}</strong>\n${escapeHtml(logs)}</div>`;
+    // Refresh the table data
+    state.sealedView = "list";
+    state.currentSealedId = null;
+    await loadSealedProducts();
+    // Re-attach the snapshot result after the table re-renders
+    _renderSnapshotResult();
+  } catch (e) {
+    state._snapshotResultHtml = `<div class="sealed-snapshot-result"><strong>✗ Error</strong>\n${escapeHtml(e.message)}</div>`;
+    _renderSnapshotResult();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
+function _renderSnapshotResult() {
+  const html = state._snapshotResultHtml;
+  if (!html) return;
+  const sectionHead = document.querySelector("#content .section-head");
+  if (!sectionHead) return;
+  // Remove any existing one (from a previous render)
+  sectionHead.querySelectorAll(".sealed-snapshot-result").forEach((n) => n.remove());
+  const tmp = document.createElement("div");
+  tmp.innerHTML = html;
+  const node = tmp.firstElementChild;
+  if (node) {
+    sectionHead.appendChild(node);
+  }
+}
+
+async function openSealedProductPage(productId) {
+  state.currentSealedId = productId;
+  state.sealedView = "detail";
+  window.scrollTo(0, 0);
+  await renderSealedDetail(productId);
+}
+
+async function renderSealedDetail(productId) {
+  const content = $("#content");
+  content.innerHTML = `<div class="muted">Loading sealed product…</div>`;
+  try {
+    const data = await api(`/api/sealed/${productId}`);
+    const product = data.product;
+
+    const cm = product.prices?.cardmarket || {};
+    const typeClass = typeBadgeClass(product.product_type);
+    const img = product.image_url
+      ? `<img class="sealed-detail-img" src="${escapeHtml(product.image_url)}" alt="${escapeHtml(product.name)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><div class="sealed-detail-img empty" style="display:none">No image</div>`
+      : `<div class="sealed-detail-img empty">No image</div>`;
+
+    const euOnly = cm.lowest_EU_only;
+    const externalLinks = [];
+    if (product.tcggo_url) {
+      externalLinks.push(`<a href="${escapeHtml(product.tcggo_url)}" target="_blank" rel="noopener">TCGGo ↗</a>`);
+    }
+    if (product.cardmarket_url) {
+      externalLinks.push(`<a href="${escapeHtml(product.cardmarket_url)}" target="_blank" rel="noopener">Cardmarket ↗</a>`);
+    }
+
+    content.innerHTML = `
+      <div class="sealed-detail-page">
+        <button class="back-btn" id="back-btn">← Back to Sealed Products</button>
+        <div class="sealed-detail-head">
+          ${img}
+          <div class="sealed-detail-info">
+            <h2>${escapeHtml(product.name)}</h2>
+            <div class="sub">
+              <span class="product-type ${typeClass}">${escapeHtml(product.product_type || "—")}</span>
+              ${product.set_name ? ` · ${escapeHtml(product.set_name)}` : ""}
+            </div>
+            <div class="price-grid">
+              <div class="price-card">
+                <div class="pc-label">Cardmarket Lowest</div>
+                <div class="pc-value eur">${fmtPrice(cm.price, cm.currency || "EUR")}</div>
+                <div class="pc-foot">${cm.date ? `as of ${cm.date}` : "EUR · lowest listing"}</div>
+              </div>
+              <div class="price-card">
+                <div class="pc-label">7D Average</div>
+                <div class="pc-value eur">${fmtPrice(cm.avg_7d, cm.currency || "EUR")}</div>
+                <div class="pc-foot">7-day avg</div>
+              </div>
+              <div class="price-card">
+                <div class="pc-label">30D Average</div>
+                <div class="pc-value eur">${fmtPrice(cm.avg_30d, cm.currency || "EUR")}</div>
+                <div class="pc-foot">30-day avg</div>
+              </div>
+              <div class="price-card">
+                <div class="pc-label">Available</div>
+                <div class="pc-value eur">${cm.available_items != null ? cm.available_items : `<span class="na">—</span>`}</div>
+                <div class="pc-foot">listings</div>
+              </div>
+            </div>
+            ${externalLinks.length ? `<div class="sealed-external-links">${externalLinks.join("")}</div>` : ""}
+          </div>
+        </div>
+
+        <h3 class="chart-title">Per-Country Lowest (EUR)</h3>
+        <div class="country-grid">
+          <div class="country-card">
+            <div class="cc-label">EU Only</div>
+            <div class="cc-value">${fmtPrice(cm.lowest_EU_only, cm.currency || "EUR")}</div>
+          </div>
+          <div class="country-card">
+            <div class="cc-label">Germany</div>
+            <div class="cc-value">${fmtPrice(cm.lowest_DE, cm.currency || "EUR")}</div>
+          </div>
+          <div class="country-card">
+            <div class="cc-label">France</div>
+            <div class="cc-value">${fmtPrice(cm.lowest_FR, cm.currency || "EUR")}</div>
+          </div>
+          <div class="country-card">
+            <div class="cc-label">Italy</div>
+            <div class="cc-value">${fmtPrice(cm.lowest_IT, cm.currency || "EUR")}</div>
+          </div>
+        </div>
+
+        <h3 class="chart-title">Price Trend</h3>
+        <div class="range-toggle" id="sealed-range-toggle">
+          <button data-range="30d" class="active">30D</button>
+          <button data-range="3m">3M</button>
+          <button data-range="6m">6M</button>
+          <button data-range="1y">1Y</button>
+          <button data-range="all">All</button>
+        </div>
+        <div class="chart-wrap"><canvas id="sealed-chart"></canvas></div>
+        <div class="legend" id="sealed-legend"></div>
+      </div>`;
+
+    // Back button
+    $("#back-btn").addEventListener("click", () => {
+      state.currentSealedId = null;
+      state.sealedView = "list";
+      renderSealedTable();
+    });
+
+    // Range toggle
+    $$("#sealed-range-toggle button").forEach((b) =>
+      b.addEventListener("click", () => {
+        $$("#sealed-range-toggle button").forEach((x) => x.classList.remove("active"));
+        b.classList.add("active");
+        state.currentRange = b.dataset.range;
+        loadSealedChart(product.id);
+      })
+    );
+
+    await loadSealedChart(product.id);
+  } catch (e) {
+    content.innerHTML = `<p class="muted">Error loading sealed product: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function loadSealedChart(productId) {
+  const canvas = $("#sealed-chart");
+  const legendEl = $("#sealed-legend");
+  const wrap = canvas?.parentElement;
+  if (!canvas || !wrap) return;
+
+  try {
+    const data = await api(`/api/sealed/${productId}/history?range=${state.currentRange}`);
+    const series = data.series || {};
+    const sources = SEALED_SOURCES.filter((s) => series[s.key] && series[s.key].length);
+    if (!sources.length) {
+      wrap.innerHTML = `<div class="chart-empty">No historical data yet. Daily snapshots build the trend over time.</div>`;
+      if (legendEl) legendEl.innerHTML = "";
+      return;
+    }
+    const dateSet = new Set();
+    sources.forEach((s) => series[s.key].forEach((p) => dateSet.add(p.date)));
+    const labels = Array.from(dateSet).sort();
+    const datasets = sources.map((s) => {
+      const map = Object.fromEntries(series[s.key].map((p) => [p.date, p.price]));
+      return {
+        label: s.label,
+        data: labels.map((d) => (d in map ? map[d] : null)),
+        borderColor: s.color,
+        backgroundColor: s.color + "22",
+        tension: 0.3,
+        spanGaps: true,
+        pointRadius: 2,
+        borderWidth: 2,
+      };
+    });
+    if (state.chart) state.chart.destroy();
+    state.chart = new Chart(canvas, {
+      type: "line",
+      data: { labels, datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: "#1a2030",
+            borderColor: "#2e3750",
+            borderWidth: 1,
+            callbacks: {
+              label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y ?? "—"}`,
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { color: "#5c6680", maxRotation: 0, autoSkip: true }, grid: { color: "rgba(255,255,255,0.04)" } },
+          y: { ticks: { color: "#5c6680" }, grid: { color: "rgba(255,255,255,0.06)" } },
+        },
+      },
+    });
+    if (legendEl) {
+      legendEl.innerHTML = sources
+        .map((s) => `<span><span class="dot" style="background:${s.color}"></span>${s.label} (${series[s.key].length} pts)</span>`)
+        .join("");
+    }
+  } catch (e) {
+    wrap.innerHTML = `<div class="chart-empty">Error loading history: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
 // ---------------------------------- Boot --------------------------------- //
 window.addEventListener("DOMContentLoaded", () => {
   loadStatus();
   loadSets();
   initSearch();
+  initTabs();
 });

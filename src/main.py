@@ -14,6 +14,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from . import api as api_mod
 from . import database
+from . import sealed_snapshot as sealed_snapshot_mod
 from . import snapshot as snapshot_mod
 from . import targeted_snapshot as targeted_snapshot_mod
 
@@ -81,6 +82,26 @@ def _attach_prices(card: Dict[str, Any]) -> Dict[str, Any]:
         for src, snap in prices.items()
     }
     return card
+
+
+def _attach_sealed_prices(product: Dict[str, Any]) -> Dict[str, Any]:
+    prices = database.get_latest_sealed_prices(product["id"])
+    product["prices"] = {
+        src: {
+            "price": snap["price"],
+            "currency": snap["currency"],
+            "date": snap["snapshot_date"],
+            "lowest_EU_only": snap.get("lowest_EU_only"),
+            "lowest_DE": snap.get("lowest_DE"),
+            "lowest_FR": snap.get("lowest_FR"),
+            "lowest_IT": snap.get("lowest_IT"),
+            "avg_7d": snap.get("avg_7d"),
+            "avg_30d": snap.get("avg_30d"),
+            "available_items": snap.get("available_items"),
+        }
+        for src, snap in prices.items()
+    }
+    return product
 
 
 # --------------------------------------------------------------------------- #
@@ -175,6 +196,7 @@ def status() -> Dict[str, Any]:
         "db_path": database.DB_PATH,
         "set_count": len(database.get_sets()),
         "card_count": len(database.all_card_ids()),
+        "sealed_count": len(database.get_sealed_products()),
     }
 
 
@@ -182,14 +204,13 @@ def status() -> Dict[str, Any]:
 def run_targeted_snapshot(budget: int = 95) -> Dict[str, Any]:
     """Run the targeted snapshot job (priority rarities only)."""
     import io
-    import contextlib
-    
+
     log_buffer = io.StringIO()
     handler = logging.StreamHandler(log_buffer)
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger = logging.getLogger("lorcana.targeted_snapshot")
     logger.addHandler(handler)
-    
+
     try:
         result = targeted_snapshot_mod.main(["--budget", str(budget)])
         logger.removeHandler(handler)
@@ -197,6 +218,95 @@ def run_targeted_snapshot(budget: int = 95) -> Dict[str, Any]:
     except Exception as e:
         logger.removeHandler(handler)
         return {"status": "error", "error": str(e), "logs": log_buffer.getvalue()}
+
+
+# --------------------------------------------------------------------------- #
+# Sealed products API
+# --------------------------------------------------------------------------- #
+@app.get("/api/sealed")
+def list_sealed_products(
+    type: Optional[str] = None,
+    q: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List all sealed products with latest prices attached.
+
+    Optional filters:
+      type: product type (e.g. "Booster Box", "Starter Deck")
+      q: search query (matches name or set_name)
+    """
+    products = database.get_sealed_products(product_type=type, query=q)
+    products = [_attach_sealed_prices(p) for p in products]
+    return {
+        "products": products,
+        "types": database.get_sealed_product_types(),
+        "count": len(products),
+    }
+
+
+# Snapshot trigger — defined BEFORE /api/sealed/{product_id} so the literal
+# "snapshot" path isn't matched as a product_id integer.
+@app.get("/api/sealed/snapshot")
+def run_sealed_snapshot(budget: int = 10) -> Dict[str, Any]:
+    """Run the sealed products snapshot job.
+
+    Budget is the number of API calls allowed. The /lorcana/products endpoint
+    is paginated (20 per page, 8 pages = ~140 products). A budget of 8-10
+    covers one full run with safety margin.
+    """
+    import io
+
+    log_buffer = io.StringIO()
+    handler = logging.StreamHandler(log_buffer)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger = logging.getLogger("lorcana.sealed_snapshot")
+    logger.addHandler(handler)
+
+    try:
+        result = sealed_snapshot_mod.main(["--budget", str(budget)])
+        logger.removeHandler(handler)
+        return {"status": "ok", "return_code": result, "logs": log_buffer.getvalue()}
+    except Exception as e:
+        logger.removeHandler(handler)
+        return {"status": "error", "error": str(e), "logs": log_buffer.getvalue()}
+
+
+@app.get("/api/sealed/{product_id}")
+def sealed_product_detail(product_id: int) -> Dict[str, Any]:
+    product = database.get_sealed_product(product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Sealed product not found")
+    product = _attach_sealed_prices(product)
+    return {"product": product}
+
+
+@app.get("/api/sealed/{product_id}/history")
+def sealed_product_history(
+    product_id: int,
+    range: str = Query("30d", pattern="^(30d|3m|6m|1y|all)$"),
+    source: Optional[str] = None,
+) -> Dict[str, Any]:
+    product = database.get_sealed_product(product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Sealed product not found")
+    days = RANGE_DAYS.get(range)
+    history = database.get_sealed_history(product_id, source=source, days=days)
+
+    # Group by source for the frontend.
+    series: Dict[str, List[Dict[str, Any]]] = {}
+    for h in history:
+        series.setdefault(h["source"], []).append({
+            "date": h["snapshot_date"],
+            "price": h["price"],
+            "currency": h["currency"],
+            "lowest_EU_only": h.get("lowest_EU_only"),
+            "lowest_DE": h.get("lowest_DE"),
+            "lowest_FR": h.get("lowest_FR"),
+            "lowest_IT": h.get("lowest_IT"),
+            "avg_7d": h.get("avg_7d"),
+            "avg_30d": h.get("avg_30d"),
+            "available_items": h.get("available_items"),
+        })
+    return {"product_id": product_id, "range": range, "series": series}
 
 
 def main() -> None:
