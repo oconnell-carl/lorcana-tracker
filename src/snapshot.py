@@ -128,50 +128,31 @@ def refresh_prices_only(api: api_mod.CardmarketAPI, budget: Budget) -> int:
 
 def enrich_card_names() -> int:
     """Enrich card names with subtitles from the free lorcana-api.com.
-    e.g. 'Buzz Lightyear' -> 'Buzz Lightyear - Space Ranger'"""
-    import json
-    import urllib.request
+    e.g. 'Buzz Lightyear' -> 'Buzz Lightyear - Space Ranger'
 
+    Updates the `full_name` and `subtitle` columns on the cards table.
+    The `name` column is left as the base character name.
+    """
+    from .enrich_subtitles import run_enrichment
+    import io
+    import contextlib
+
+    # Capture log output from the enrichment module
     log.info("Enriching card names from lorcana-api.com...")
     try:
-        req = urllib.request.Request(LORCANA_API_URL, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            lorcana_cards = json.loads(resp.read())
+        run_enrichment(dry_run=False)
+        # Return approximate count (the function logs details)
+        import sqlite3
+        conn = sqlite3.connect(database.DB_PATH)
+        count = conn.execute(
+            "SELECT COUNT(*) FROM cards WHERE full_name IS NOT NULL AND full_name != ''"
+        ).fetchone()[0]
+        conn.close()
+        log.info("Enriched %d card names.", count)
+        return count
     except Exception as e:
-        log.warning("Failed to fetch from lorcana-api.com: %s", e)
+        log.warning("Card name enrichment failed: %s", e)
         return 0
-
-    # Build lookup: (set_name, card_num) -> full_name
-    lookup = {}
-    for c in lorcana_cards:
-        set_name = c.get("Set_Name", "")
-        card_num = c.get("Card_Num")
-        if set_name and card_num is not None:
-            lookup[(set_name, int(card_num))] = c.get("Name", "")
-
-    conn_raw = __import__("sqlite3").connect(database.DB_PATH)
-    conn_raw.row_factory = __import__("sqlite3").Row
-    updated = 0
-    for card in conn_raw.execute(
-        "SELECT c.id, c.name, c.card_number, s.name as set_name "
-        "FROM cards c JOIN sets s ON c.set_id = s.id"
-    ).fetchall():
-        try:
-            num = int(card["card_number"]) if card["card_number"] else None
-        except (ValueError, TypeError):
-            continue
-        key = (card["set_name"], num)
-        if key in lookup:
-            full_name = lookup[key]
-            if full_name and full_name != card["name"]:
-                conn_raw.execute(
-                    "UPDATE cards SET name = ? WHERE id = ?", (full_name, card["id"])
-                )
-                updated += 1
-    conn_raw.commit()
-    conn_raw.close()
-    log.info("Enriched %d card names.", updated)
-    return updated
 
 
 def main(argv=None) -> int:

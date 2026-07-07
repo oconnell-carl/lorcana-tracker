@@ -669,6 +669,12 @@ th.sortable:hover { color: var(--text); }
 
 /* -------------------------- Card detail page ---------------------------- */
 .card-detail-page { max-width: 900px; }
+.card-subtitle {
+  font-size: 15px;
+  color: var(--text-dim);
+  font-weight: 500;
+  margin-top: 2px;
+}
 .back-btn {
   background: var(--bg-elev);
   border: 1px solid var(--border);

@@ -122,6 +122,9 @@ def init_db() -> None:
         _add_column_if_missing(conn, "price_snapshots", "avg_30d", "REAL")
         _add_column_if_missing(conn, "price_snapshots", "available_items", "INTEGER")
         _add_column_if_missing(conn, "price_snapshots", "lowest_near_mint_raw", "REAL")
+        # Subtitle enrichment (from free Lorcana API)
+        _add_column_if_missing(conn, "cards", "subtitle", "TEXT")
+        _add_column_if_missing(conn, "cards", "full_name", "TEXT")
 
 
 # --------------------------------------------------------------------------- #
@@ -175,8 +178,8 @@ def upsert_card(c: Dict[str, Any]) -> int:
     with get_conn() as conn:
         cur = conn.execute(
             """
-            INSERT INTO cards (cardmarket_id, name, card_number, rarity, set_id, image_url, updated_at)
-            VALUES (:cardmarket_id, :name, :card_number, :rarity, :set_id, :image_url, :updated_at)
+            INSERT INTO cards (cardmarket_id, name, card_number, rarity, set_id, image_url, subtitle, full_name, updated_at)
+            VALUES (:cardmarket_id, :name, :card_number, :rarity, :set_id, :image_url, :subtitle, :full_name, :updated_at)
             ON CONFLICT(cardmarket_id) DO UPDATE SET
                 name=excluded.name, card_number=excluded.card_number,
                 rarity=excluded.rarity, set_id=excluded.set_id,
@@ -189,6 +192,8 @@ def upsert_card(c: Dict[str, Any]) -> int:
                 "rarity": c.get("rarity"),
                 "set_id": c.get("set_id"),
                 "image_url": c.get("image_url"),
+                "subtitle": c.get("subtitle"),
+                "full_name": c.get("full_name"),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             },
         )

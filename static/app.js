@@ -283,7 +283,7 @@ function renderCardTable(set, cards) {
       rows += `
         <tr data-card-id="${c.id}">
           <td class="thumb-cell">${thumb}</td>
-          <td><strong>${escapeHtml(c.name)}</strong></td>
+          <td><strong>${escapeHtml(c.full_name || c.name)}</strong></td>
           <td class="num">${escapeHtml(c.card_number || "")}</td>
           <td>${c.rarity ? `<span class="rarity rarity-${c.rarity.toLowerCase()}">${escapeHtml(rarityLabel(c.rarity))}</span>` : `<span class="na">—</span>`}</td>
           <td class="price-eur">${fmtPrice(cm?.price, cm?.currency || "EUR")}</td>
@@ -370,7 +370,7 @@ async function renderCardPage(card) {
   const tp = card.prices?.tcgplayer;
   const psa = card.prices?.psa10;
   const img = card.image_url
-    ? `<img class="detail-img" src="${escapeHtml(card.image_url)}" alt="${escapeHtml(card.name)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><div class="detail-img empty" style="display:none">No image available</div>`
+    ? `<img class="detail-img" src="${escapeHtml(card.image_url)}" alt="${escapeHtml(card.full_name || card.name)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><div class="detail-img empty" style="display:none">No image available</div>`
     : `<div class="detail-img empty">No image</div>`;
 
   const setName = card.set_name || state.sets.find(s => s.id === card.set_id)?.name || "—";
@@ -381,7 +381,8 @@ async function renderCardPage(card) {
       <div class="detail-head">
         ${img}
         <div class="detail-info">
-          <h2>${escapeHtml(card.name)}</h2>
+          <h2>${escapeHtml(card.full_name || card.name)}</h2>
+          ${card.subtitle ? `<div class="card-subtitle">${escapeHtml(card.subtitle)}</div>` : ''}
           <div class="sub">
             ${escapeHtml(setName)} · #${escapeHtml(card.card_number || "—")}
             ${card.rarity ? ` · <span class="rarity rarity-${card.rarity.toLowerCase()}">${escapeHtml(rarityLabel(card.rarity))}</span>` : ""}
@@ -566,7 +567,7 @@ function initSearch() {
           results.innerHTML = items
             .map(
               (c) =>
-                `<li data-id="${c.id}"><span class="r-name">${escapeHtml(c.name)}</span><span class="r-set">${escapeHtml(c.set_name || "")} · #${escapeHtml(c.card_number || "")}</span></li>`
+                `<li data-id="${c.id}"><span class="r-name">${escapeHtml(c.full_name || c.name)}</span><span class="r-set">${escapeHtml(c.set_name || "")} · #${escapeHtml(c.card_number || "")}</span></li>`
             )
             .join("");
           results.hidden = false;
