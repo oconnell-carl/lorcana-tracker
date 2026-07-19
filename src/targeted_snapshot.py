@@ -1,20 +1,31 @@
-"""Targeted daily snapshot: fetch prices for priority rarities (Iconic, Enchanted, Promo).
+"""Targeted daily snapshot: fetch prices for priority rarities (Iconic, Enchanted, Epic, Promo).
 
 Strategy:
-1. Fetch sets we already have that contain Enchanted/Iconic — only pages 10-13 (where those cards live)
-2. Fetch all Promo sets (small, cheap)
-3. Fetch last ~5 pages from empty large sets (to discover Enchanted/Iconic)
-4. Fetch all pages from empty small sets
-5. If budget remains, fetch more pages from empty large sets
+1. Phase 1: Fetch priority rarity pages from ALL sets — pages 10+ for sets with
+   Enchanted/Iconic/Epic, all pages for small Promo-only sets. This ensures price
+   data for every Iconic, Enchanted, Epic, and Promo card across all sets before
+   spending API calls on lower rarities.
+2. Phase 2: Full fetch remaining pages from daily priority sets (1, 5, 7-13).
+3. Phase 3: If alternating day (odd day-of-year), full fetch remaining pages from
+   alternating sets (2, 3, 4, 6).
+4. Phase 4: Remaining pages from other sets (budget permitting).
 
-API returns 20 cards per page. Enchanted cards are typically card #200+, Iconic #240+.
-So Enchanted are on pages 11-12, Iconic on page 13.
+Price storage:
+- Priority rarities (Iconic, Enchanted, Epic, Promo): always stored.
+- Secondary rarities (Legendary and below): only stored after Phase 1 completes
+  for all sets with priority rarities.
+
+Set tiers:
+- Daily: Sets 1, 5, 7, 8, 9, 10, 11, 12, 13 — fetched every day
+- Alternating: Sets 2, 3, 4, 6 — full fetch every 2nd day (odd day-of-year)
+- Other: Sets 14+ — priority rarities in Phase 1, remaining pages in Phase 4
 
 Usage:
     python -m src.targeted_snapshot
-    python -m src.targeted_snapshot --budget 90
+    python -m src.targeted_snapshot --budget 92
     python -m src.targeted_snapshot --dry-run
     python -m src.targeted_snapshot --max-runtime 600   # 10 min hard limit
+    python -m src.targeted_snapshot --force              # re-run even if today's snapshot exists
 """
 
 import argparse
@@ -33,18 +44,29 @@ from . import database
 
 log = logging.getLogger("lorcana.targeted_snapshot")
 
-# Priority rarities — only these get price snapshots stored
-PRIORITY_RARITIES = {"Iconic", "Enchanted", "Promo"}
+# Priority rarities — always get price snapshots
+PRIORITY_RARITIES = {"Iconic", "Enchanted", "Epic", "Promo"}
 
-# Free RapidAPI tier = 100 req/day
-DEFAULT_BUDGET = 95  # leave 5 as safety margin
+# Secondary rarities — only get price snapshots after all priority rarities
+# across all sets are covered
+SECONDARY_RARITIES = {
+    "Legendary", "Super_rare", "SUPER RARE", "rare",
+    "Uncommon", "Common", "Oversized", "Quest",
+}
+
+# Set tiers for fetch prioritisation
+DAILY_SET_IDS = {1, 5, 7, 8, 9, 10, 11, 12, 13}
+ALTERNATING_SET_IDS = {2, 3, 4, 6}
+
+# Free RapidAPI tier = 100 req/day; sealed uses ~8, leaving 92 for cards
+DEFAULT_BUDGET = 92
 
 CARDS_PER_PAGE = 20
 
 # Hard runtime limit (seconds) — prevents indefinite hangs
 DEFAULT_MAX_RUNTIME = 600  # 10 minutes
 
-# Per-request timeout (seconds) — lower than api.py default of 30s
+# Per-request timeout (seconds)
 REQUEST_TIMEOUT = 15.0
 
 # Delay between requests (seconds) — courtesy to API
@@ -52,6 +74,9 @@ REQUEST_DELAY = 0.3
 
 # Max consecutive failures before aborting a phase
 MAX_CONSECUTIVE_FAILURES = 3
+
+# Module-level flag: set to True after Phase 1 confirms all priority rarities covered
+_store_secondary = False
 
 
 class Budget:
@@ -67,7 +92,6 @@ class Budget:
 
     def spend(self, n: int = 1) -> None:
         self.used += n
-        # Don't raise — just log and let caller check can_spend()
         if self.used >= self.limit:
             log.warning("API call budget reached (%d/%d)", self.used, self.limit)
 
@@ -90,13 +114,22 @@ class RuntimeGuard:
 
 
 def _store_card_with_prices(card: Dict, set_id: int, today: str, stats: Dict) -> None:
-    """Store card and its price snapshots (only for priority rarities)."""
+    """Store card and its price snapshots.
+
+    Always stores prices for PRIORITY_RARITIES (Iconic, Enchanted, Epic, Promo).
+    Stores prices for SECONDARY_RARITIES (Legendary and below) only when
+    the module-level _store_secondary flag is True (set after Phase 1 completes
+    for all sets with priority rarities).
+    """
     card["set_id"] = set_id
     card_id = database.upsert_card(card)
     stats["cards_stored"] += 1
 
     rarity = card.get("rarity", "")
-    if rarity not in PRIORITY_RARITIES:
+    is_priority = rarity in PRIORITY_RARITIES
+    is_secondary = _store_secondary and rarity in SECONDARY_RARITIES
+
+    if not is_priority and not is_secondary:
         return
 
     stats[f"rarity_{rarity}_cards"] = stats.get(f"rarity_{rarity}_cards", 0) + 1
@@ -178,12 +211,10 @@ def _fetch_pages(api: api_mod.CardmarketAPI, cm_id: int, pages: List[int],
     consecutive_failures = 0
 
     for page in pages:
-        # Check budget
         if not budget.can_spend(1):
             log.warning("Budget exhausted before page %d of set cm_id=%d", page, cm_id)
             break
 
-        # Check runtime
         if runtime.expired():
             log.warning("Runtime limit (%ds) reached, stopping. elapsed=%.1fs",
                         runtime.max_seconds, runtime.elapsed())
@@ -221,7 +252,47 @@ def _already_snapshotted_today(today: str) -> int:
     return database.snapshot_exists(today)
 
 
+def _get_priority_pages(s: Dict) -> List[int]:
+    """Determine which pages to fetch for priority rarities in a set.
+
+    For sets with Enchanted/Iconic/Epic: pages 10+ (where those cards live).
+    For small/Promo-only sets: all pages (they're cheap).
+    """
+    total_pages = _get_total_pages(s.get("card_count", 0))
+    if total_pages == 0:
+        return []
+
+    rars = set(database.get_rarities_in_set(s["id"]))
+    has_high_priority = bool(rars & {"Enchanted", "Iconic", "Epic"})
+
+    if has_high_priority:
+        # Enchanted/Iconic/Epic are on pages 10+
+        return list(range(10, total_pages + 1))
+    elif "Promo" in rars:
+        # Promo-only set — usually small, fetch all pages
+        return list(range(1, total_pages + 1))
+    else:
+        # No priority rarities at all (e.g., Set 2)
+        return []
+
+
+def _get_remaining_pages(s: Dict, already_done: Set[int]) -> List[int]:
+    """Get pages not yet fetched for a set.
+
+    Returns pages in DESCENDING order (highest page first) so that higher-value
+    cards (Super Rares, Legendaries on pages 8-9) are fetched before Commons
+    and Uncommons on pages 1-7, in case budget runs out mid-phase.
+    """
+    total_pages = _get_total_pages(s.get("card_count", 0))
+    if total_pages == 0:
+        return []
+    all_pages = set(range(1, total_pages + 1))
+    return sorted(all_pages - already_done, reverse=True)
+
+
 def main(argv=None) -> int:
+    global _store_secondary
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="Targeted Lorcana price snapshot (priority rarities)")
     parser.add_argument("--budget", type=int, default=DEFAULT_BUDGET, help="API call budget")
@@ -238,7 +309,6 @@ def main(argv=None) -> int:
         log.warning("No RAPIDAPI_KEY set; skipping.")
         return 0
 
-    # Use timezone-aware UTC instead of deprecated utcnow()
     today = datetime.now(timezone.utc).date().isoformat()
 
     # Idempotency: skip if already ran today (unless --force)
@@ -257,199 +327,208 @@ def main(argv=None) -> int:
     except Exception:
         pass  # fall back to default timeout
 
+    # Determine alternating day (odd day-of-year = run alternating sets)
+    day_of_year = datetime.now(timezone.utc).timetuple().tm_yday
+    run_alternating = (day_of_year % 2 == 1)
+
     sets = database.get_sets()
     log.info("=== Targeted Snapshot for %s ===", today)
     log.info("Budget: %d API calls | Max runtime: %ds | Request timeout: %.0fs",
              args.budget, args.max_runtime, REQUEST_TIMEOUT)
-    log.info("Priority rarities: %s", ", ".join(PRIORITY_RARITIES))
+    log.info("Priority rarities: %s", ", ".join(sorted(PRIORITY_RARITIES)))
+    log.info("Secondary rarities: %s", ", ".join(sorted(SECONDARY_RARITIES)))
+    log.info("Daily sets: %s", sorted(DAILY_SET_IDS))
+    log.info("Alternating sets: %s (run today: %s)", sorted(ALTERNATING_SET_IDS), run_alternating)
 
     # Categorize sets
-    sets_with_enchanted: Set[int] = set()
-    sets_with_iconic: Set[int] = set()
-    sets_with_promo: Set[int] = set()
-    sets_with_cards: Set[int] = set()
-    sets_empty: Set[int] = set()
+    # priority_target_sets: sets with card_count > 0 that have priority rarities
+    # (used to determine if _store_secondary can be enabled after Phase 1)
+    priority_target_sets: Set[int] = set()
+    daily_sets: List[Dict] = []
+    alternating_sets: List[Dict] = []
+    other_sets: List[Dict] = []
 
-    for s in sets:
+    for s in sorted(sets, key=lambda x: x["id"]):
         sid = s["id"]
-        rarities = set(database.get_rarities_in_set(sid))
-
-        if "Enchanted" in rarities:
-            sets_with_enchanted.add(sid)
-        if "Iconic" in rarities:
-            sets_with_iconic.add(sid)
-        if "Promo" in rarities:
-            sets_with_promo.add(sid)
-
+        rars = set(database.get_rarities_in_set(sid))
         card_count = s.get("card_count", 0) or 0
-        if card_count > 0 and not rarities:
-            sets_empty.add(sid)
-        elif card_count > 0:
-            sets_with_cards.add(sid)
 
-    log.info("Sets with Enchanted: %s", sets_with_enchanted)
-    log.info("Sets with Iconic: %s", sets_with_iconic)
-    log.info("Sets with Promo: %s", sets_with_promo)
-    log.info("Sets with cards: %s (%d sets)", sets_with_cards, len(sets_with_cards))
-    log.info("Sets empty: %s (%d sets)", sets_empty, len(sets_empty))
+        if card_count > 0 and rars & PRIORITY_RARITIES:
+            priority_target_sets.add(sid)
 
-    # Track what was fetched across phases for Phase 4
+        if sid in DAILY_SET_IDS:
+            daily_sets.append(s)
+        elif sid in ALTERNATING_SET_IDS:
+            alternating_sets.append(s)
+        else:
+            other_sets.append(s)
+
+    log.info("Sets with priority rarities to cover: %s", sorted(priority_target_sets))
+    log.info("Daily sets: %d | Alternating sets: %d | Other sets: %d",
+             len(daily_sets), len(alternating_sets), len(other_sets))
+
+    # Track pages fetched per set across phases
     pages_fetched_by_set: Dict[int, Set[int]] = {}
 
-    # Phase 1: Fetch pages with Enchanted/Iconic from sets we already have
-    log.info("\n--- Phase 1: Existing Enchanted/Iconic sets (targeted pages) ---")
-    phase1_sets = sets_with_enchanted | sets_with_iconic
-    for sid in sorted(phase1_sets):
+    # ============================================================
+    # Phase 1: Priority rarity pages from ALL sets
+    # ============================================================
+    log.info("\n--- Phase 1: Priority rarity pages from ALL sets ---")
+    phase1_sets = daily_sets + alternating_sets + other_sets
+    phase1_covered: Set[int] = set()
+
+    for s in phase1_sets:
         if runtime.expired():
-            log.warning("Runtime limit reached before Phase 1 set %d", sid)
+            log.warning("Runtime limit reached during Phase 1")
             break
 
-        s = database.get_set(sid)
-        if not s:
+        sid = s["id"]
+        target_pages = _get_priority_pages(s)
+        if not target_pages:
+            log.info("  Set %s (id=%d): no priority pages to fetch (card_count=%d)",
+                     s["name"], sid, s.get("card_count", 0))
+            # If this set has priority rarities but 0 cards, it's not in priority_target_sets
+            # If it has priority rarities and cards but all on pages we can't determine, skip
             continue
-        cm_id = s["cardmarket_id"]
-        total_pages = _get_total_pages(s.get("card_count", 0))
-        # Enchanted are on pages 10-12, Iconic on page 13
-        target_pages = [p for p in range(10, total_pages + 1)]
 
-        log.info("Set %s (cm_id=%d): fetching pages %s", s["name"], cm_id, target_pages)
+        cm_id = s["cardmarket_id"]
+        log.info("  Set %s (id=%d, cm_id=%d): fetching priority pages %s",
+                 s["name"], sid, cm_id, target_pages)
+
         if args.dry_run:
             budget.spend(len(target_pages))
+            pages_fetched_by_set[sid] = set(target_pages)
+            phase1_covered.add(sid)
             continue
 
         count = _fetch_pages(api, cm_id, target_pages, budget, sid, today, stats, runtime)
         pages_fetched_by_set[sid] = set(target_pages[:count])
-        log.info("  Got %d pages from %s", count, s["name"])
+        if count > 0:
+            phase1_covered.add(sid)
+        log.info("    Got %d/%d pages from %s", count, len(target_pages), s["name"])
 
-    # Phase 2: Fetch all pages from sets that have Promo cards (usually small sets)
-    log.info("\n--- Phase 2: Promo sets (full fetch) ---")
-    for sid in sorted(sets_with_promo):
-        if runtime.expired():
-            log.warning("Runtime limit reached before Phase 2 set %d", sid)
-            break
-        if sid in phase1_sets:
-            continue  # already fetched in phase 1
-        s = database.get_set(sid)
-        if not s:
-            continue
-        cm_id = s["cardmarket_id"]
-        total_pages = _get_total_pages(s.get("card_count", 0))
-        target_pages = list(range(1, total_pages + 1))
+    log.info("Phase 1 complete. API calls used: %d/%d | Budget remaining: %d | Runtime: %.1fs",
+             budget.used, budget.limit, budget.remaining(), runtime.elapsed())
 
-        log.info("Set %s (cm_id=%d): fetching pages %s", s["name"], cm_id, target_pages)
-        if args.dry_run:
-            budget.spend(len(target_pages))
-            continue
+    # Check if all priority target sets were covered in Phase 1
+    all_priorities_covered = priority_target_sets.issubset(phase1_covered)
+    if all_priorities_covered:
+        log.info("✓ All priority rarities covered across all sets. Secondary rarity pricing enabled.")
+        _store_secondary = True
+    else:
+        uncovered = priority_target_sets - phase1_covered
+        log.warning("✗ Not all priority sets covered (missing: %s). Secondary pricing disabled.",
+                    sorted(uncovered))
+        _store_secondary = False
 
-        count = _fetch_pages(api, cm_id, target_pages, budget, sid, today, stats, runtime)
-        pages_fetched_by_set[sid] = set(target_pages[:count])
-        log.info("  Got %d pages from %s", count, s["name"])
-
-    # Phase 3: Fetch last ~5 pages from empty large sets (discover Enchanted/Iconic)
-    log.info("\n--- Phase 3: Empty large sets (last 5 pages) ---")
-    for sid in sorted(sets_empty):
-        if runtime.expired():
-            log.warning("Runtime limit reached before Phase 3 set %d", sid)
-            break
-
-        s = database.get_set(sid)
-        if not s:
-            continue
-        cm_id = s["cardmarket_id"]
-        total_pages = _get_total_pages(s.get("card_count", 0))
-        if total_pages <= 5:
-            # Small set, fetch all
-            target_pages = list(range(1, total_pages + 1))
-        else:
-            # Large set, fetch last 5 pages
-            target_pages = list(range(max(1, total_pages - 4), total_pages + 1))
-
-        log.info("Set %s (cm_id=%d): fetching pages %s", s["name"], cm_id, target_pages)
-        if args.dry_run:
-            budget.spend(len(target_pages))
-            continue
-
-        count = _fetch_pages(api, cm_id, target_pages, budget, sid, today, stats, runtime)
-        pages_fetched_by_set[sid] = set(target_pages[:count])
-        log.info("  Got %d pages from %s", count, s["name"])
-
-    # Phase 4: If budget remains, fetch remaining pages from sets with cards
-    log.info("\n--- Phase 4: Remaining budget for full price refresh ---")
-    for sid in sorted(sets_with_cards):
+    # ============================================================
+    # Phase 2: Remaining pages from DAILY_SETS (1, 5, 7-13)
+    # ============================================================
+    log.info("\n--- Phase 2: Remaining pages from daily sets ---")
+    for s in daily_sets:
         if runtime.expired() or not budget.can_spend(1):
+            log.warning("Budget/runtime exhausted, stopping Phase 2")
             break
 
-        s = database.get_set(sid)
-        if not s:
-            continue
-        cm_id = s["cardmarket_id"]
-        total_pages = _get_total_pages(s.get("card_count", 0))
-        # Fetch pages we haven't done yet in phase 1
-        all_pages = set(range(1, total_pages + 1))
+        sid = s["id"]
         already_done = pages_fetched_by_set.get(sid, set())
-        if sid in phase1_sets:
-            already_done |= set(range(10, total_pages + 1))
-        remaining_pages = sorted(all_pages - already_done)
-
-        if not remaining_pages:
+        remaining = _get_remaining_pages(s, already_done)
+        if not remaining:
             continue
 
-        # Only fetch as many pages as budget allows
-        affordable = remaining_pages[:budget.remaining()]
+        cm_id = s["cardmarket_id"]
+        log.info("  Set %s (id=%d): %d remaining pages (budget: %d left, runtime: %.0fs left)",
+                 s["name"], sid, len(remaining), budget.remaining(), runtime.remaining())
+
+        if args.dry_run:
+            budget.used += min(len(remaining), budget.remaining())
+            continue
+
+        count = _fetch_pages(api, cm_id, remaining, budget, sid, today, stats, runtime)
+        pages_fetched_by_set[sid] = pages_fetched_by_set.get(sid, set()) | set(remaining[:count])
+        log.info("    Got %d/%d pages from %s", count, len(remaining), s["name"])
+
+    log.info("Phase 2 complete. API calls used: %d/%d | Budget remaining: %d | Runtime: %.1fs",
+             budget.used, budget.limit, budget.remaining(), runtime.elapsed())
+
+    # ============================================================
+    # Phase 3: If alternating day, remaining pages from ALTERNATING_SETS (2, 3, 4, 6)
+    # ============================================================
+    if run_alternating:
+        log.info("\n--- Phase 3: Remaining pages from alternating sets (alternating day) ---")
+        for s in alternating_sets:
+            if runtime.expired() or not budget.can_spend(1):
+                log.warning("Budget/runtime exhausted, stopping Phase 3")
+                break
+
+            sid = s["id"]
+            already_done = pages_fetched_by_set.get(sid, set())
+            remaining = _get_remaining_pages(s, already_done)
+            if not remaining:
+                continue
+
+            cm_id = s["cardmarket_id"]
+            log.info("  Set %s (id=%d): %d remaining pages (budget: %d left, runtime: %.0fs left)",
+                     s["name"], sid, len(remaining), budget.remaining(), runtime.remaining())
+
+            if args.dry_run:
+                budget.used += min(len(remaining), budget.remaining())
+                continue
+
+            count = _fetch_pages(api, cm_id, remaining, budget, sid, today, stats, runtime)
+            pages_fetched_by_set[sid] = pages_fetched_by_set.get(sid, set()) | set(remaining[:count])
+            log.info("    Got %d/%d pages from %s", count, len(remaining), s["name"])
+
+        log.info("Phase 3 complete. API calls used: %d/%d | Budget remaining: %d | Runtime: %.1fs",
+                 budget.used, budget.limit, budget.remaining(), runtime.elapsed())
+    else:
+        log.info("\n--- Phase 3: Skipped (not an alternating day) ---")
+
+    # ============================================================
+    # Phase 4: Remaining pages from other sets (budget permitting)
+    # ============================================================
+    log.info("\n--- Phase 4: Remaining pages from other sets ---")
+    for s in other_sets:
+        if runtime.expired() or not budget.can_spend(1):
+            log.warning("Budget/runtime exhausted, stopping Phase 4")
+            break
+
+        sid = s["id"]
+        already_done = pages_fetched_by_set.get(sid, set())
+        remaining = _get_remaining_pages(s, already_done)
+        if not remaining:
+            continue
+
+        cm_id = s["cardmarket_id"]
+        affordable = remaining[:budget.remaining()]
         if not affordable:
-            log.info("  No budget remaining, skipping %s", s["name"])
             continue
 
-        log.info("Set %s (cm_id=%d): fetching %d/%d remaining pages (budget: %d left, runtime: %.0fs left)",
-                 s["name"], cm_id, len(affordable), len(remaining_pages),
+        log.info("  Set %s (id=%d): %d remaining pages, fetching %d (budget: %d left, runtime: %.0fs left)",
+                 s["name"], sid, len(remaining), len(affordable),
                  budget.remaining(), runtime.remaining())
+
         if args.dry_run:
             budget.used += len(affordable)
             continue
 
         count = _fetch_pages(api, cm_id, affordable, budget, sid, today, stats, runtime)
-        log.info("  Got %d pages from %s", count, s["name"])
+        pages_fetched_by_set[sid] = pages_fetched_by_set.get(sid, set()) | set(affordable[:count])
+        log.info("    Got %d/%d pages from %s", count, len(affordable), s["name"])
 
-    # Phase 5: If budget still remains, fetch first pages from empty large sets
-    log.info("\n--- Phase 5: Fill in empty large sets ---")
-    for sid in sorted(sets_empty):
-        if runtime.expired() or budget.used >= budget.limit:
-            break
+    log.info("Phase 4 complete. API calls used: %d/%d | Runtime: %.1fs",
+             budget.used, budget.limit, runtime.elapsed())
 
-        s = database.get_set(sid)
-        if not s:
-            continue
-        cm_id = s["cardmarket_id"]
-        total_pages = _get_total_pages(s.get("card_count", 0))
-        if total_pages <= 5:
-            continue  # already fully fetched in phase 3
-
-        # Fetch pages 1 through (total-5), minus any already done in phase 3
-        already_done = pages_fetched_by_set.get(sid, set())
-        first_pages = [p for p in range(1, total_pages - 4) if p not in already_done]
-        if not first_pages:
-            continue
-
-        affordable = first_pages[:budget.remaining()]
-        if not affordable:
-            continue
-
-        log.info("Set %s (cm_id=%d): fetching %d first pages (budget: %d left, runtime: %.0fs left)",
-                 s["name"], cm_id, len(affordable), budget.remaining(), runtime.remaining())
-        if args.dry_run:
-            budget.used += len(affordable)
-            continue
-
-        count = _fetch_pages(api, cm_id, affordable, budget, sid, today, stats, runtime)
-        log.info("  Got %d pages from %s", count, s["name"])
-
+    # ============================================================
     # Summary
+    # ============================================================
     log.info("\n=== Summary ===")
     log.info("API calls used: %d / %d", budget.used, budget.limit)
-    log.info("Runtime: %.1fs / %ds", runtime.elapsed(), runtime.max_seconds)
+    log.info("Runtime: %.1fs / %ds", runtime.elapsed(), args.max_runtime)
     log.info("Cards stored: %d", stats["cards_stored"])
     log.info("Price snapshots stored: %d", stats["snapshots_stored"])
-    for rarity in PRIORITY_RARITIES:
+    log.info("Secondary rarity pricing: %s", "ENABLED" if _store_secondary else "DISABLED")
+    for rarity in sorted(PRIORITY_RARITIES | SECONDARY_RARITIES):
         key = f"rarity_{rarity}_cards"
         if key in stats:
             log.info("  %s cards with prices: %d", rarity, stats[key])
