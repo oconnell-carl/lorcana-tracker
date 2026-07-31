@@ -255,7 +255,10 @@ def _already_snapshotted_today(today: str) -> int:
 def _get_priority_pages(s: Dict) -> List[int]:
     """Determine which pages to fetch for priority rarities in a set.
 
-    For sets with Enchanted/Iconic/Epic: pages 10+ (where those cards live).
+    Cardmarket API sorts cards by rarity DESCENDING (highest rarity first):
+    Enchanted → Iconic → Epic → Legendary → SUPER RARE → rare → Uncommon → Common.
+    So priority rarities (Enchanted/Iconic/Epic) are on the FIRST pages (1-3 typically).
+
     For small/Promo-only sets: all pages (they're cheap).
     """
     total_pages = _get_total_pages(s.get("card_count", 0))
@@ -266,28 +269,38 @@ def _get_priority_pages(s: Dict) -> List[int]:
     has_high_priority = bool(rars & {"Enchanted", "Iconic", "Epic"})
 
     if has_high_priority:
-        # Enchanted/Iconic/Epic are on pages 10+
-        return list(range(10, total_pages + 1))
+        # Enchanted/Iconic/Epic are on the FIRST pages (rarity desc sort)
+        # Fetch pages 1-3 to cover all priority rarities for most sets
+        priority_pages = list(range(1, min(4, total_pages + 1)))
+        return priority_pages
     elif "Promo" in rars:
         # Promo-only set — usually small, fetch all pages
         return list(range(1, total_pages + 1))
+    elif total_pages >= 10:
+        # DB doesn't show priority rarities yet, but with 10+ pages
+        # the set likely has Enchanted/Iconic on early pages that haven't
+        # been fetched. Always fetch pages 1-3 to discover them.
+        log.info("    Set %s (id=%d): DB has no priority rarities but %d pages — fetching pages 1-3 anyway",
+                 s.get("name", "?"), s["id"], total_pages)
+        return list(range(1, min(4, total_pages + 1)))
     else:
-        # No priority rarities at all (e.g., Set 2)
+        # No priority rarities and too few pages to matter
         return []
 
 
 def _get_remaining_pages(s: Dict, already_done: Set[int]) -> List[int]:
     """Get pages not yet fetched for a set.
 
-    Returns pages in DESCENDING order (highest page first) so that higher-value
-    cards (Super Rares, Legendaries on pages 8-9) are fetched before Commons
-    and Uncommons on pages 1-7, in case budget runs out mid-phase.
+    Returns pages in ASCENDING order (lowest page first) since Cardmarket sorts
+    by rarity descending — higher-value cards (Legendary, SUPER RARE) are on
+    pages 3-5, while Commons/Uncommons are on pages 6+. Fetching ascending
+    ensures we get mid-value cards before Commons if budget runs out.
     """
     total_pages = _get_total_pages(s.get("card_count", 0))
     if total_pages == 0:
         return []
     all_pages = set(range(1, total_pages + 1))
-    return sorted(all_pages - already_done, reverse=True)
+    return sorted(all_pages - already_done)
 
 
 def main(argv=None) -> int:
@@ -353,7 +366,8 @@ def main(argv=None) -> int:
         rars = set(database.get_rarities_in_set(sid))
         card_count = s.get("card_count", 0) or 0
 
-        if card_count > 0 and rars & PRIORITY_RARITIES:
+        total_pages = _get_total_pages(card_count)
+        if card_count > 0 and (rars & PRIORITY_RARITIES or total_pages >= 10):
             priority_target_sets.add(sid)
 
         if sid in DAILY_SET_IDS:
