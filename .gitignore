@@ -7,3 +7,4 @@ data/*.db-journal
 node_modules/
 .DS_Store
 src/lorcana.db
+lorcana.db
