@@ -23,6 +23,7 @@ TRACKED_RARITIES = ("Iconic", "Enchanted", "Epic", "Promo", "Legendary")
 
 # Noise filters
 MIN_PRICE = 2.0          # ignore cards currently under €2
+MAX_PRICE = 10_000.0     # above this is a placeholder/junk listing, not a market price
 MIN_ABS_CHANGE = 0.50    # need at least €0.50 move
 MIN_PCT_CHANGE = 3.0     # ...and at least 3% move
 TOP_N_DAY = 10
@@ -53,9 +54,48 @@ def prices_for_date(conn, date, source="cardmarket"):
     """.format(",".join("?" * len(TRACKED_RARITIES)))
     out = {}
     for cid, price, avail in conn.execute(q, (source, date, *TRACKED_RARITIES)):
-        if price is not None:
+        if price is not None and price <= MAX_PRICE:
             out[cid] = (price, avail)
     return out
+
+
+def avg_prices_window(conn, start_date, end_date, source="cardmarket"):
+    """Return {card_id: (avg_price, n_days)} averaged across snapshots in [start, end]."""
+    q = """
+        SELECT s.card_id, AVG(s.price), COUNT(DISTINCT s.snapshot_date)
+        FROM price_snapshots s
+        JOIN cards c ON c.id = s.card_id
+        WHERE s.source = ? AND s.snapshot_date BETWEEN ? AND ?
+          AND s.price IS NOT NULL AND s.price > 0 AND s.price <= ?
+          AND c.rarity IN ({})
+        GROUP BY s.card_id
+    """.format(",".join("?" * len(TRACKED_RARITIES)))
+    return {cid: (avg, n) for cid, avg, n in conn.execute(
+        q, (source, start_date, end_date, MAX_PRICE, *TRACKED_RARITIES))}
+
+
+def window_movers(cur_avg, prev_avg, meta, min_days=2):
+    """Movers based on windowed average prices (7d avg vs prior 7d avg).
+
+    Requires >= min_days of data in each window to avoid single-day artifacts.
+    """
+    rows = []
+    for cid, (avg, n) in cur_avg.items():
+        if cid not in prev_avg or avg < MIN_PRICE or n < min_days:
+            continue
+        old_avg, old_n = prev_avg[cid]
+        if old_n < min_days or not old_avg or old_avg <= 0:
+            continue
+        chg = avg - old_avg
+        pct = (chg / old_avg) * 100.0
+        if abs(chg) >= MIN_ABS_CHANGE and abs(pct) >= MIN_PCT_CHANGE:
+            m = meta.get(cid, {})
+            rows.append({"name": m.get("name", "?"), "subtitle": m.get("subtitle", ""),
+                         "rarity": m.get("rarity", "?"), "set": m.get("set", ""),
+                         "old": old_avg, "new": avg, "chg": chg, "pct": pct})
+    gainers = sorted((r for r in rows if r["chg"] > 0), key=lambda r: -r["pct"])
+    losers = sorted((r for r in rows if r["chg"] < 0), key=lambda r: r["pct"])
+    return gainers, losers
 
 
 def card_meta(conn):
@@ -115,7 +155,8 @@ def all_time_lows(conn, latest_date, meta):
     """.format(",".join("?" * len(TRACKED_RARITIES)))
     out = []
     for cid, price, min_price, snaps in conn.execute(q, (latest_date, *TRACKED_RARITIES)):
-        if price and min_price and price <= min_price and snaps >= 10 and price >= MIN_PRICE:
+        if price and min_price and price <= min_price and snaps >= 10 \
+                and MIN_PRICE <= price <= MAX_PRICE:
             m = meta.get(cid, {})
             out.append({"name": m.get("name", "?"), "subtitle": m.get("subtitle", ""),
                         "rarity": m.get("rarity", "?"), "set": m.get("set", ""),
@@ -156,14 +197,15 @@ def fmt_mover(r):
             f"   €{r['old']:.2f} → €{r['new']:.2f}  ({r['chg']:+.2f}, {r['pct']:+.1f}%)")
 
 
-def market_overview(latest, previous, meta):
+def market_overview(cur_avg, prev_avg, meta):
+    """Per-rarity tracked value: current 7d avg total vs previous 7d avg total."""
     by_rarity = {}
     prev_by_rarity = {}
-    for cid, (price, _avail) in latest.items():
+    for cid, (avg, _n) in cur_avg.items():
         r = meta.get(cid, {}).get("rarity", "?")
-        by_rarity.setdefault(r, []).append(price)
-        if cid in previous:
-            prev_by_rarity.setdefault(r, []).append(previous[cid][0])
+        by_rarity.setdefault(r, []).append(avg)
+        if cid in prev_avg:
+            prev_by_rarity.setdefault(r, []).append(prev_avg[cid][0])
     lines = []
     for r in TRACKED_RARITIES:
         vals = by_rarity.get(r)
@@ -172,9 +214,10 @@ def market_overview(latest, previous, meta):
         total = sum(vals)
         prev_total = sum(prev_by_rarity.get(r, []))
         delta = total - prev_total if prev_total else 0.0
+        pct = (delta / prev_total * 100.0) if prev_total else 0.0
         sign = "+" if delta >= 0 else ""
-        lines.append(f"• {r}: {len(vals)} cards, €{total:,.0f} total "
-                     f"({sign}€{delta:,.0f} d/d)")
+        lines.append(f"• {r}: {len(vals)} cards, €{total:,.0f} avg value "
+                     f"({sign}€{delta:,.0f} / {sign}{pct:.1f}% w/w)")
     return lines
 
 
@@ -197,6 +240,16 @@ def build_report(as_of=None):
     latest = prices_for_date(conn, latest_date)
     previous = prices_for_date(conn, prev_date) if prev_date else {}
 
+    # 7-day windows: current = [latest-6, latest], previous = [latest-13, latest-7]
+    latest_d = datetime.strptime(latest_date, "%Y-%m-%d").date()
+    cur_start = (latest_d - timedelta(days=6)).strftime("%Y-%m-%d")
+    prev_start = (latest_d - timedelta(days=13)).strftime("%Y-%m-%d")
+    prev_end = (latest_d - timedelta(days=7)).strftime("%Y-%m-%d")
+    cur_avg = avg_prices_window(conn, cur_start, latest_date)
+    prev_avg = avg_prices_window(conn, prev_start, prev_end)
+    # Cardmarket snapshot history starts 2026-07-31; skip w/w if prev window empty
+    have_week = bool(prev_avg)
+
     parts = []
     parts.append(f"📊 <b>Lorcana Market Report — {latest_date}</b>")
     parts.append(f"<i>Tracking {len(latest)} premium cards (Iconic/Enchanted/Epic/Promo/Legendary)"
@@ -217,10 +270,10 @@ def build_report(as_of=None):
         if not g and not l:
             parts.append("No significant moves (±3% / €0.50 threshold).")
 
-    if week_date and week_date != latest_date and week_date != prev_date:
-        week_prev = prices_for_date(conn, week_date)
-        wg, wl = movers(latest, week_prev, meta)
-        parts.append(f"\n<b>Week-on-week (vs {week_date})</b>")
+    if have_week:
+        wg, wl = window_movers(cur_avg, prev_avg, meta)
+        parts.append(f"\n<b>Week-on-week (7d avg {cur_start}→{latest_date} "
+                     f"vs {prev_start}→{prev_end})</b>")
         if wg:
             parts.append("<b>Gainers:</b>")
             parts.extend(fmt_mover(r) for r in wg[:TOP_N_WEEK])
@@ -243,8 +296,17 @@ def build_report(as_of=None):
             for r in shifts:
                 parts.append(f"• {fmt_card(r, show_set=False)} [{r['rarity']}] — "
                              f"{r['old']} → {r['new']} listings (€{r['price']:.2f})")
-        parts.append("\n<b>Market overview (tracked value):</b>")
-        parts.extend(market_overview(latest, previous, meta))
+        parts.append("\n<b>Market overview (7d avg tracked value, w/w):</b>")
+        if have_week:
+            parts.extend(market_overview(cur_avg, prev_avg, meta))
+        else:
+            by_r = {}
+            for cid, (avg, _n) in cur_avg.items():
+                by_r.setdefault(meta.get(cid, {}).get("rarity", "?"), []).append(avg)
+            for r in TRACKED_RARITIES:
+                vals = by_r.get(r)
+                if vals:
+                    parts.append(f"• {r}: {len(vals)} cards, €{sum(vals):,.0f} avg value")
 
     conn.close()
     return "\n".join(parts)

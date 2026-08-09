@@ -309,6 +309,22 @@ def get_rarities_in_set(set_id: int) -> List[str]:
         return [r["rarity"] for r in rows if r["rarity"]]
 
 
+def get_priority_card_numbers(set_id: int) -> List[int]:
+    """Return card numbers (as ints) of priority rarity cards in a set.
+
+    Priority rarities: Enchanted, Iconic, Epic.
+    Used to calculate which API pages contain these cards.
+    """
+    PRIORITY = ("Enchanted", "Iconic", "Epic")
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT card_number FROM cards WHERE set_id=? AND rarity IN ({}) "
+            "AND card_number IS NOT NULL".format(",".join("?" * len(PRIORITY))),
+            [set_id] + list(PRIORITY),
+        ).fetchall()
+        return sorted(int(r["card_number"]) for r in rows if r["card_number"].isdigit())
+
+
 def snapshot_exists(date_str: str) -> int:
     """How many snapshots exist for a given date (used to skip duplicate runs)."""
     with get_conn() as conn:
