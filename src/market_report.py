@@ -21,6 +21,13 @@ DB_PATH = Path(__file__).resolve().parent.parent / "data" / "prices.db"
 
 TRACKED_RARITIES = ("Iconic", "Enchanted", "Epic", "Promo", "Legendary")
 
+# Sealed product types Carl cares about (English-language retail pieces)
+SEALED_TYPES = (
+    "Booster Box", "Illumineer's Trove", "Collector's Set",
+    "Collection Starter Set", "Starter Deck", "2 Starter Deck Set",
+    "3 Starter Deck Set", "Gift Set", "Gift Box",
+)
+
 # Noise filters
 MIN_PRICE = 2.0          # ignore cards currently under €2
 MAX_PRICE = 10_000.0     # above this is a placeholder/junk listing, not a market price
@@ -96,6 +103,65 @@ def window_movers(cur_avg, prev_avg, meta, min_days=2):
     gainers = sorted((r for r in rows if r["chg"] > 0), key=lambda r: -r["pct"])
     losers = sorted((r for r in rows if r["chg"] < 0), key=lambda r: r["pct"])
     return gainers, losers
+
+
+def sealed_for_date(conn, date):
+    """Return {product_id: price} for tracked sealed types on a date."""
+    q = """
+        SELECT s.product_id, s.price
+        FROM sealed_price_snapshots s
+        JOIN sealed_products p ON p.id = s.product_id
+        WHERE s.snapshot_date = ? AND s.price IS NOT NULL AND s.price > 0
+          AND p.product_type IN ({})
+    """.format(",".join("?" * len(SEALED_TYPES)))
+    return {pid: price for pid, price in conn.execute(q, (date, *SEALED_TYPES))
+            if price <= MAX_PRICE}
+
+
+def sealed_avg_window(conn, start_date, end_date):
+    """Return {product_id: (avg_price, n_days)} for tracked sealed types."""
+    q = """
+        SELECT s.product_id, AVG(s.price), COUNT(DISTINCT s.snapshot_date)
+        FROM sealed_price_snapshots s
+        JOIN sealed_products p ON p.id = s.product_id
+        WHERE s.snapshot_date BETWEEN ? AND ?
+          AND s.price IS NOT NULL AND s.price > 0 AND s.price <= ?
+          AND p.product_type IN ({})
+        GROUP BY s.product_id
+    """.format(",".join("?" * len(SEALED_TYPES)))
+    return {pid: (avg, n) for pid, avg, n in conn.execute(
+        q, (start_date, end_date, MAX_PRICE, *SEALED_TYPES))}
+
+
+def sealed_meta(conn):
+    q = "SELECT id, name, product_type FROM sealed_products"
+    return {r[0]: {"name": r[1], "type": r[2] or ""} for r in conn.execute(q)}
+
+
+def sealed_movers(cur, prev, meta, min_days=2):
+    """Sealed movers from windowed averages {pid: (avg, n_days)}."""
+    rows = []
+    for pid, (avg, n) in cur.items():
+        if pid not in prev or n < min_days:
+            continue
+        old_avg, old_n = prev[pid]
+        if old_n < min_days or not old_avg or old_avg <= 0:
+            continue
+        chg = avg - old_avg
+        pct = (chg / old_avg) * 100.0
+        if abs(chg) >= 1.0 and abs(pct) >= MIN_PCT_CHANGE:
+            m = meta.get(pid, {})
+            rows.append({"name": m.get("name", "?"), "type": m.get("type", ""),
+                         "old": old_avg, "new": avg, "chg": chg, "pct": pct})
+    gainers = sorted((r for r in rows if r["chg"] > 0), key=lambda r: -r["pct"])
+    losers = sorted((r for r in rows if r["chg"] < 0), key=lambda r: r["pct"])
+    return gainers, losers
+
+
+def fmt_sealed_mover(r):
+    arrow = "🟢" if r["chg"] > 0 else "🔴"
+    return (f"{arrow} <b>{r['name']}</b>\n"
+            f"   €{r['old']:.2f} → €{r['new']:.2f}  ({r['chg']:+.2f}, {r['pct']:+.1f}%)")
 
 
 def card_meta(conn):
@@ -288,6 +354,46 @@ def build_report(as_of=None):
         parts.append(f"\n<b>📉 At all-time tracked lows ({len(lows)} cards):</b>")
         for r in lows[:TOP_N_LOWS]:
             parts.append(f"• {fmt_card(r)} [{r['rarity']}] — €{r['price']:.2f}")
+
+    # --- Sealed products section ---
+    smeta = sealed_meta(conn)
+    sealed_cur = sealed_avg_window(conn, cur_start, latest_date)
+    sealed_prev = sealed_avg_window(conn, prev_start, prev_end)
+    sealed_day_cur = sealed_for_date(conn, latest_date)
+    sealed_day_prev = sealed_for_date(conn, prev_date) if prev_date else {}
+
+    if sealed_cur:
+        parts.append(f"\n<b>📦 Sealed Products ({len(sealed_cur)} tracked: Booster Boxes, "
+                     f"Troves, Starter Decks, Gift/Collector's Sets)</b>")
+        # Day-on-day sealed movers (point-in-time)
+        sd_rows = []
+        for pid, price in sealed_day_cur.items():
+            if pid in sealed_day_prev and sealed_day_prev[pid] > 0:
+                old = sealed_day_prev[pid]
+                chg, pct = price - old, (price - old) / old * 100.0
+                if abs(chg) >= 1.0 and abs(pct) >= MIN_PCT_CHANGE:
+                    sd_rows.append({"name": smeta.get(pid, {}).get("name", "?"),
+                                    "old": old, "new": price, "chg": chg, "pct": pct})
+        sd_g = sorted((r for r in sd_rows if r["chg"] > 0), key=lambda r: -r["pct"])[:5]
+        sd_l = sorted((r for r in sd_rows if r["chg"] < 0), key=lambda r: r["pct"])[:5]
+        if sd_g or sd_l:
+            parts.append("<b>Day-on-day:</b>")
+            parts.extend(fmt_sealed_mover(r) for r in sd_g + sd_l)
+        if sealed_prev:
+            swg, swl = sealed_movers(sealed_cur, sealed_prev, smeta)
+            if swg or swl:
+                parts.append("<b>Week-on-week (7d avg):</b>")
+                parts.extend(fmt_sealed_mover(r) for r in (swg[:5] + swl[:5]))
+            if not (sd_g or sd_l or swg or swl):
+                parts.append("No significant sealed moves.")
+        # Booster box price ladder
+        boxes = sorted(
+            ((smeta[pid]["name"], avg) for pid, (avg, _n) in sealed_cur.items()
+             if smeta.get(pid, {}).get("type") == "Booster Box"),
+            key=lambda x: -x[1])
+        if boxes:
+            parts.append("<b>Booster Box prices (7d avg):</b>")
+            parts.extend(f"• {name} — €{avg:,.0f}" for name, avg in boxes[:8])
 
     if prev_date:
         shifts = supply_shifts(latest, previous, meta)
