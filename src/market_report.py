@@ -24,8 +24,7 @@ TRACKED_RARITIES = ("Iconic", "Enchanted", "Epic", "Promo", "Legendary")
 # Sealed product types Carl cares about (English-language retail pieces)
 SEALED_TYPES = (
     "Booster Box", "Illumineer's Trove", "Collector's Set",
-    "Collection Starter Set", "Starter Deck", "2 Starter Deck Set",
-    "3 Starter Deck Set", "Gift Set", "Gift Box",
+    "Collection Starter Set", "Gift Set", "Gift Box",
 )
 
 # Noise filters
@@ -364,7 +363,7 @@ def build_report(as_of=None):
 
     if sealed_cur:
         parts.append(f"\n<b>📦 Sealed Products ({len(sealed_cur)} tracked: Booster Boxes, "
-                     f"Troves, Starter Decks, Gift/Collector's Sets)</b>")
+                     f"Troves, Gift/Collector's Sets)</b>")
         # Day-on-day sealed movers (point-in-time)
         sd_rows = []
         for pid, price in sealed_day_cur.items():
