@@ -29,6 +29,9 @@ def get_conn() -> Iterable[sqlite3.Connection]:
         conn.close()
 
 
+import json as _json
+
+
 def _add_column_if_missing(conn, table: str, column: str, definition: str) -> None:
     """Add a column to a table if it doesn't already exist (ALTER TABLE migration)."""
     cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -125,11 +128,42 @@ def init_db() -> None:
         # Subtitle enrichment (from free Lorcana API)
         _add_column_if_missing(conn, "cards", "subtitle", "TEXT")
         _add_column_if_missing(conn, "cards", "full_name", "TEXT")
+        # Learned pages that contain priority-rarity cards (JSON list of ints)
+        _add_column_if_missing(conn, "sets", "priority_pages", "TEXT")
 
 
 # --------------------------------------------------------------------------- #
 # Sets
 # --------------------------------------------------------------------------- #
+def get_learned_priority_pages(set_id: int) -> List[int]:
+    """Return pages we have observed to contain priority-rarity cards for a set.
+
+    Learned at fetch time (record_priority_page). Empty list if nothing learned.
+    """
+    with get_conn() as conn:
+        row = conn.execute("SELECT priority_pages FROM sets WHERE id=?", (set_id,)).fetchone()
+        if not row or not row["priority_pages"]:
+            return []
+        try:
+            pages = _json.loads(row["priority_pages"])
+            return sorted(int(p) for p in pages if isinstance(p, int) or str(p).isdigit())
+        except Exception:
+            return []
+
+
+def record_priority_page(set_id: int, page: int) -> None:
+    """Record that a given page of a set's card listing contains priority-rarity cards."""
+    existing = get_learned_priority_pages(set_id)
+    if page in existing:
+        return
+    existing.append(page)
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE sets SET priority_pages=? WHERE id=?",
+            (_json.dumps(sorted(existing)), set_id),
+        )
+
+
 def upsert_set(s: Dict[str, Any]) -> int:
     with get_conn() as conn:
         cur = conn.execute(

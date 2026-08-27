@@ -192,11 +192,17 @@ def _fetch_single_page(api: api_mod.CardmarketAPI, cm_id: int, page: int,
     if not items:
         return False
 
+    page_has_priority = False
     for it in items:
         if not isinstance(it, dict):
             continue
         card = api._normalise_card(it)
+        if card.get("rarity") in PRIORITY_RARITIES:
+            page_has_priority = True
         _store_card_with_prices(card, set_id, today, stats)
+
+    if page_has_priority:
+        database.record_priority_page(set_id, page)
 
     return True
 
@@ -268,6 +274,15 @@ def _get_priority_pages(s: Dict) -> List[int]:
     total_pages = _get_total_pages(s.get("card_count", 0))
     if total_pages == 0:
         return []
+
+    # Learned pages take precedence: the API does not reliably sort cards by
+    # number (e.g. Attack of the Vine returns priority cards on pages 1-2),
+    # so card-number-based page math is wrong for some sets.
+    learned = database.get_learned_priority_pages(s["id"])
+    if learned:
+        log.info("    Using learned priority pages %s for set %s (id=%d)",
+                 learned, s.get("name", "?"), s["id"])
+        return list(learned)
 
     rars = set(database.get_rarities_in_set(s["id"]))
     has_high_priority = bool(rars & {"Enchanted", "Iconic", "Epic"})
