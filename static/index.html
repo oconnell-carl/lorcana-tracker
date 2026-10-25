@@ -8,12 +8,17 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2l11 14-11 14L5 16z' fill='%23d9ae5c'/%3E%3C/svg%3E" />
   <link rel="preconnect" href="https://api.fontshare.com" />
   <link href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600&f[]=zodiak@500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/style.css?v=1" />
+  <link rel="stylesheet" href="/static/style.css?v=2" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
   <script>
-    // Served by the FastAPI app on the same origin; override for a standalone static host.
-    window.API_BASE = "";
-    if (window.API_BASE.startsWith("__")) window.API_BASE = "http://localhost:8000";
+    // Same-origin by default (served by FastAPI). To use the NUC's data from
+    // another machine, open with ?api=http://home-server:8000 or persist it:
+    //   localStorage.setItem("lorcana_api", "http://home-server:8000")
+    (function () {
+      var q = new URLSearchParams(location.search).get("api");
+      window.API_BASE = (q || localStorage.getItem("lorcana_api") || "").replace(/\/$/, "");
+      if (window.API_BASE.startsWith("__")) window.API_BASE = "http://localhost:8000";
+    })();
   </script>
 </head>
 <body>
@@ -42,6 +47,6 @@
     <span>Rebuilt from <a href="https://github.com/oconnell-carl/lorcana-tracker" target="_blank" rel="noopener">oconnell-carl/lorcana-tracker</a></span>
   </footer>
 
-  <script src="/static/app.js?v=1"></script>
+  <script src="/static/app.js?v=2"></script>
 </body>
 </html>

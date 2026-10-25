@@ -19,7 +19,7 @@ const INKS = ["Amber", "Amethyst", "Emerald", "Ruby", "Sapphire", "Steel"];
 const rl = (r) => RARITY_LABEL[r] || r || "—";
 
 async function api(path) {
-  const r = await fetch(`${window.API_BASE}/api${path}`);
+  const r = await fetch(`${window.API_BASE}/api/app${path}`);
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
   return r.json();
 }
@@ -94,11 +94,12 @@ async function renderSets() {
   content.innerHTML = `<div class="page">${skeleton(6)}</div>`;
   try {
     if (!state.sets.length) state.sets = (await api("/sets")).sets;
-    const main = state.sets.filter((s) => /^\d+$/.test(s.code)).sort((a, b) => Number(b.code) - Number(a.code));
-    const other = state.sets.filter((s) => !/^\d+$/.test(s.code));
+    const byDate = (a, b) => String(b.release_date || "").localeCompare(String(a.release_date || ""));
+    const main = state.sets.filter((s) => s.card_count > 0).sort(byDate);
+    const other = state.sets.filter((s) => !(s.card_count > 0)).sort(byDate);
     const tile = (s) => `
-      <a class="set-tile" href="#/set/${encodeURIComponent(s.code)}">
-        <div class="set-art">${s.cover ? `<img src="${esc(s.cover)}" alt="" loading="lazy" />` : ""}<span class="set-code">${esc(s.code)}</span></div>
+      <a class="set-tile" href="#/set/${s.id}">
+        <div class="set-art">${s.cover ? `<img src="${esc(s.cover)}" alt="" loading="lazy" />` : ""}${s.code ? `<span class="set-code">${esc(s.code)}</span>` : ""}</div>
         <div class="set-body">
           <div class="set-name">${esc(s.name)}</div>
           <div class="set-meta"><span>${s.card_count} cards</span><span>${s.release_date ? new Date(s.release_date).getFullYear() : ""}</span></div>
@@ -110,10 +111,10 @@ async function renderSets() {
         <div class="page-head">
           <div><h1>Sets</h1><p class="sub">Pick a set to see every card with Cardmarket and TCGPlayer prices.</p></div>
         </div>
-        <h2 class="section-label">Main sets</h2>
-        <div class="set-grid">${main.map(tile).join("")}</div>
-        <h2 class="section-label">Promos & special releases</h2>
-        <div class="set-grid compact">${other.map(tile).join("")}</div>
+        ${main.length ? `<h2 class="section-label">Main sets</h2>
+        <div class="set-grid">${main.map(tile).join("")}</div>` : ""}
+        ${other.length ? `<h2 class="section-label">Promos & special releases</h2>
+        <div class="set-grid compact">${other.map(tile).join("")}</div>` : ""}
       </div>`;
   } catch (e) { content.innerHTML = errorBox(e); }
 }
@@ -122,9 +123,9 @@ async function renderSets() {
 async function renderSet(code) {
   content.innerHTML = `<div class="page">${skeleton()}</div>`;
   try {
-    if (!state.setView || state.setView.set.code !== code) {
+    if (!state.setView || String(state.setView.set.id) !== String(code)) {
       state.setView = await api(`/sets/${encodeURIComponent(code)}/cards`);
-      state.rarity = "all"; state.ink = "all"; state.filter = ""; state.sortBy = "num"; state.sortDir = "asc";
+      state.rarity = "all"; state.filter = ""; state.sortBy = "num"; state.sortDir = "asc";
     }
     drawSet();
   } catch (e) { content.innerHTML = errorBox(e); }
@@ -135,7 +136,6 @@ function sortedCards() {
   const f = state.filter.toLowerCase();
   let list = cards.filter((c) =>
     (state.rarity === "all" || c.rarity === state.rarity) &&
-    (state.ink === "all" || c.ink === state.ink) &&
     (!f || (c.full_name || "").toLowerCase().includes(f)));
   const key = {
     num: (c) => c.num_sort, name: (c) => c.full_name, rarity: (c) => RARITY_ORDER[c.rarity] ?? 99,
@@ -169,15 +169,15 @@ function drawSet() {
     <tr data-id="${c.id}" tabindex="0">
       <td class="c-thumb">${thumb(c)}</td>
       <td class="c-num tab-num">${esc(c.card_number)}</td>
-      <td class="c-name"><div class="nm">${inkDot(c.ink)}<span>${esc(c.name)}</span></div>${c.version ? `<div class="ver">${esc(c.version)}</div>` : ""}</td>
+      <td class="c-name"><div class="nm"><span>${esc(c.name)}</span></div>${c.version ? `<div class="ver">${esc(c.version)}</div>` : ""}</td>
       <td class="hide-sm">${rarityChip(c.rarity)}</td>
       <td class="num eur strong">${money(c.cm_trend)}</td>
       <td class="num hide-md">${money(c.cm_low)}</td>
       <td class="num hide-md">${money(c.cm_avg7)}</td>
       <td class="num hide-sm">${money(c.cm_avg30)}</td>
       <td class="num hide-sm">${pct(pctVal(c.cm_trend, c.cm_avg30))}</td>
-      <td class="num usd">${money(c.usd, "USD")}</td>
-      <td class="num usd hide-md">${money(c.usd_foil, "USD")}</td>
+      <td class="num usd">${money(c.usd, c.usd_currency)}</td>
+      <td class="num usd hide-md">${money(c.usd_foil, c.usd_currency)}</td>
     </tr>`).join("") || `<tr><td colspan="11" class="empty-row">No cards match these filters.</td></tr>`;
 
   content.innerHTML = `
@@ -188,13 +188,12 @@ function drawSet() {
       </div>
       <div class="kpis">
         <div class="kpi"><div class="k-label">Cards</div><div class="k-val tab-num">${cards.length}</div><div class="k-foot">${priced} with Cardmarket price</div></div>
-        <div class="kpi"><div class="k-label">Full set value</div><div class="k-val tab-num eur">${money(total)}</div><div class="k-foot">sum of trend prices</div></div>
+        <div class="kpi"><div class="k-label">Full set value</div><div class="k-val tab-num eur">${money(total)}</div><div class="k-foot">sum of lowest NM prices</div></div>
         <div class="kpi"><div class="k-label">Top card</div><div class="k-val tab-num eur">${top ? money(top.cm_trend) : "—"}</div><div class="k-foot">${top ? esc(top.full_name) : ""}</div></div>
       </div>
       <div class="toolbar">
         <div class="chips" role="group" aria-label="Rarity">${rarities.map((r) => `<button class="chip ${state.rarity === r ? "active" : ""}" data-rarity="${r}">${r === "all" ? "All" : esc(rl(r))}<span class="cnt">${r === "all" ? cards.length : counts[r]}</span></button>`).join("")}</div>
         <div class="toolbar-right">
-          <div class="inks" role="group" aria-label="Ink">${["all", ...INKS].map((i) => `<button class="ink-btn ${state.ink === i ? "active" : ""}" data-ink="${i}" title="${i === "all" ? "All inks" : i}">${i === "all" ? "All" : `<span class="ink ink-${i.toLowerCase()}"></span>`}</button>`).join("")}</div>
           <input class="filter" id="set-filter" type="search" placeholder="Filter this set" value="${esc(state.filter)}" aria-label="Filter cards in this set" />
         </div>
       </div>
@@ -202,13 +201,13 @@ function drawSet() {
         <table class="grid">
           <thead><tr>
             <th class="c-thumb"></th>${th("num", "#")}${th("name", "Card")}${th("rarity", "Rarity", "hide-sm")}
-            ${th("trend", "CM trend", "num")}${th("low", "CM from", "num hide-md")}${th("avg7", "7D avg", "num hide-md")}${th("avg30", "30D avg", "num hide-sm")}${th("vs30", "vs 30D", "num hide-sm")}
+            ${th("trend", "CM price", "num")}${th("low", "CM from", "num hide-md")}${th("avg7", "7D avg", "num hide-md")}${th("avg30", "30D avg", "num hide-sm")}${th("vs30", "vs 30D", "num hide-sm")}
             ${th("usd", "TCGP", "num")}${th("foil", "TCGP foil", "num hide-md")}
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
-      <p class="note">CM trend is Cardmarket's price trend; “CM from” is the lowest current listing in any language or condition. Enchanted, Epic and Iconic use foil prices.</p>
+      <p class="note">CM price is the lowest English near-mint listing; “CM from” is the lowest current listing in any language or condition.</p>
     </div>`;
 
   $$("th.sortable").forEach((t) => t.addEventListener("click", () => {
@@ -218,7 +217,6 @@ function drawSet() {
     drawSet();
   }));
   $$(".chip[data-rarity]").forEach((b) => b.addEventListener("click", () => { state.rarity = b.dataset.rarity; drawSet(); }));
-  $$(".ink-btn").forEach((b) => b.addEventListener("click", () => { state.ink = b.dataset.ink; drawSet(); }));
   const fi = $("#set-filter");
   fi.addEventListener("input", () => {
     state.filter = fi.value;
@@ -241,18 +239,17 @@ async function renderCard(id) {
     const vs30 = pctVal(c.cm_trend, c.cm_avg30);
     content.innerHTML = `
       <div class="page">
-        <a class="back" href="#/set/${encodeURIComponent(c.set_code)}">← ${esc(c.set_name)}</a>
+        <a class="back" href="#/set/${c.set_id}">← ${esc(c.set_name)}</a>
         <div class="detail">
           <div class="detail-art">${c.image_large ? `<img src="${esc(c.image_large)}" alt="${esc(c.full_name)}" />` : `<div class="art-ph">No image</div>`}</div>
           <div class="detail-main">
-            <div class="eyebrow">${inkDot(c.ink)}${esc(c.ink || "")} · ${esc(c.type || "")}</div>
             <h1>${esc(c.name)}</h1>
             ${c.version ? `<div class="version">${esc(c.version)}</div>` : ""}
             <div class="meta-row">${esc(c.set_name)} · #${esc(c.card_number)} ${rarityChip(c.rarity)}</div>
             <div class="price-cards">
-              <div class="pcard"><div class="p-label">Cardmarket trend</div><div class="p-val eur">${money(c.cm_trend)}</div><div class="p-foot">${pct(vs30)} vs 30-day avg</div></div>
+              <div class="pcard"><div class="p-label">Cardmarket lowest NM</div><div class="p-val eur">${money(c.cm_trend)}</div><div class="p-foot">${pct(vs30)} vs 30-day avg</div></div>
               <div class="pcard"><div class="p-label">Cardmarket from</div><div class="p-val">${money(c.cm_low)}</div><div class="p-foot">lowest listing, any condition</div></div>
-              <div class="pcard"><div class="p-label">TCGPlayer market</div><div class="p-val usd">${money(usdBest(c), "USD")}</div><div class="p-foot">${c.usd != null && c.usd_foil != null ? `foil ${money(c.usd_foil, "USD")}` : c.usd == null && c.usd_foil != null ? "foil" : "non-foil"}</div></div>
+              <div class="pcard"><div class="p-label">TCGPlayer market</div><div class="p-val usd">${money(usdBest(c), c.usd_currency)}</div><div class="p-foot">converted to EUR</div></div>
             </div>
             <div class="links">
               ${c.cm_url ? `<a class="btn" href="${esc(c.cm_url)}" target="_blank" rel="noopener">View on Cardmarket ↗</a>` : ""}
@@ -272,7 +269,7 @@ async function renderCard(id) {
 
         <section class="panel">
           <div class="panel-head"><h2>Cardmarket averages</h2></div>
-          <div class="avg-bars">${[["30-day avg", c.cm_avg30], ["7-day avg", c.cm_avg7], ["1-day avg", c.cm_avg1], ["Trend", c.cm_trend], ["From", c.cm_low]].map(([l, v]) => {
+          <div class="avg-bars">${[["30-day avg", c.cm_avg30], ["7-day avg", c.cm_avg7], ["1-day avg", c.cm_avg1], ["Lowest NM", c.cm_trend], ["From", c.cm_low]].map(([l, v]) => {
             const max = Math.max(c.cm_avg30 || 0, c.cm_avg7 || 0, c.cm_avg1 || 0, c.cm_trend || 0, c.cm_low || 0) || 1;
             return `<div class="bar-row"><span class="b-lbl">${l}</span><span class="b-track"><span class="b-fill" style="width:${v ? Math.max(2, (v / max) * 100) : 0}%"></span></span><span class="b-val tab-num">${money(v)}</span></div>`;
           }).join("")}</div>
@@ -281,16 +278,16 @@ async function renderCard(id) {
         ${c.printings.length ? `<section class="panel">
           <div class="panel-head"><h2>Other printings</h2></div>
           <div class="printings">${c.printings.map((p) => `
-            <a class="printing" href="#/card/${p.id}">${thumb(p, "pthumb")}<div><div class="pr-set">${esc(p.set_name)} · #${esc(p.card_number)}</div>${rarityChip(p.rarity)}<div class="pr-price">${money(p.cm_trend)} <span class="usd">${money(usdBest(p), "USD")}</span></div></div></a>`).join("")}</div>
+            <a class="printing" href="#/card/${p.id}">${thumb(p, "pthumb")}<div><div class="pr-set">${esc(p.set_name)} · #${esc(p.card_number)}</div>${rarityChip(p.rarity)}<div class="pr-price">${money(p.cm_trend)} <span class="usd">${money(usdBest(p), p.usd_currency)}</span></div></div></a>`).join("")}</div>
         </section>` : ""}
       </div>`;
     const fb = [["30-day avg", c.cm_avg30], ["7-day avg", c.cm_avg7], ["1-day avg", c.cm_avg1], ["Trend now", c.cm_trend]];
     $$("#range button").forEach((b) => b.addEventListener("click", () => {
       state.range = b.dataset.range;
       $$("#range button").forEach((x) => x.classList.toggle("active", x === b));
-      drawHistory(`/cards/${id}/history`, [["cm_trend", "Cardmarket trend (EUR)", "#d9ae5c"], ["cm_low", "Cardmarket from (EUR)", "#8a7a55"], ["usd", "TCGPlayer (USD)", "#7aa7e0"], ["usd_foil", "TCGPlayer foil (USD)", "#5578a8"]], fb);
+      drawHistory(`/cards/${id}/history`, [["cm_trend", "Cardmarket price (EUR)", "#d9ae5c"], ["cm_low", "Cardmarket from (EUR)", "#8a7a55"], ["usd", "TCGPlayer (EUR)", "#7aa7e0"]], fb);
     }));
-    drawHistory(`/cards/${id}/history`, [["cm_trend", "Cardmarket trend (EUR)", "#d9ae5c"], ["cm_low", "Cardmarket from (EUR)", "#8a7a55"], ["usd", "TCGPlayer (USD)", "#7aa7e0"], ["usd_foil", "TCGPlayer foil (USD)", "#5578a8"]], fb);
+    drawHistory(`/cards/${id}/history`, [["cm_trend", "Cardmarket price (EUR)", "#d9ae5c"], ["cm_low", "Cardmarket from (EUR)", "#8a7a55"], ["usd", "TCGPlayer (EUR)", "#7aa7e0"]], fb);
   } catch (e) { content.innerHTML = errorBox(e); }
 }
 
@@ -367,11 +364,11 @@ async function renderMarket() {
         </div>
         ${m.lows.length ? `<section class="panel"><div class="panel-head"><h2>At lowest tracked price</h2></div>${moverList(m.lows.map((c) => ({ ...c, now: c.cm_trend, then: c.cm_avg30, pct: pctVal(c.cm_trend, c.cm_avg30) })))}</section>` : ""}
         <section class="panel">
-          <div class="panel-head"><h2>Most valuable cards</h2><span class="basis">Cardmarket trend</span></div>
+          <div class="panel-head"><h2>Most valuable cards</h2><span class="basis">Cardmarket lowest NM</span></div>
           <div class="top-grid">${m.top.map((c, i) => `<a class="top-card" href="#/card/${c.id}"><span class="rank">${i + 1}</span>${thumb(c, "tthumb")}<span class="t-name">${esc(c.full_name)}</span><span class="t-sub">${esc(c.set_name)}</span><span class="t-price eur">${money(c.cm_trend)}</span></a>`).join("")}</div>
         </section>
         <div class="report-grid">
-          <section class="panel"><div class="panel-head"><h2>Booster box ladder</h2><span class="basis">English booster boxes, trend price</span></div>
+          <section class="panel"><div class="panel-head"><h2>Booster box ladder</h2><span class="basis">English booster boxes, lowest listing</span></div>
             <div class="ladder">${(() => { const max = Math.max(...m.booster_ladder.map((b) => b.trend || 0)) || 1; return m.booster_ladder.map((b) => `<a class="bar-row" href="#/sealed/${b.id}"><span class="b-lbl">${esc(b.set_name || b.name.replace(/ Booster Box$/, ""))}</span><span class="b-track"><span class="b-fill" style="width:${Math.max(2, ((b.trend || 0) / max) * 100)}%"></span></span><span class="b-val tab-num">${money(b.trend)}</span></a>`).join(""); })()}</div>
           </section>
           <section class="panel"><div class="panel-head"><h2>Sealed movers</h2><span class="basis">${esc(m.sealed_movers.basis)} · boxes, troves, gift & collector sets</span></div>
@@ -416,7 +413,7 @@ function drawSealed() {
       </div>
       <div class="table-wrap">
         <table class="grid">
-          <thead><tr>${th("name", "Product")}<th class="hide-sm">Type</th>${th("trend", "Trend", "num")}${th("low", "From", "num")}${th("avg", "Avg sell", "num hide-sm")}${th("vsavg", "Trend vs avg", "num hide-sm")}${th("added", "Listed", "num hide-md")}</tr></thead>
+          <thead><tr>${th("name", "Product")}<th class="hide-sm">Type</th>${th("trend", "Lowest", "num")}${th("low", "From", "num")}${th("avg", "Avg sell", "num hide-sm")}${th("vsavg", "Lowest vs avg", "num hide-sm")}${th("added", "Listed", "num hide-md")}</tr></thead>
           <tbody>${list.map((p) => `
             <tr data-id="${p.id}" tabindex="0">
               <td class="c-name no-ink"><div class="nm"><span>${esc(p.name)}</span></div>${p.set_name ? `<div class="ver">${esc(p.set_name)}</div>` : ""}</td>
@@ -455,8 +452,8 @@ async function renderSealedDetail(id) {
         <a class="back" href="#/sealed">← Sealed products</a>
         <div class="page-head"><div><div class="eyebrow">${esc(p.product_type)}${p.set_name ? ` · ${esc(p.set_name)}` : ""}</div><h1>${esc(p.name)}</h1></div></div>
         <div class="price-cards wide">
-          <div class="pcard"><div class="p-label">Trend</div><div class="p-val eur">${money(p.trend)}</div><div class="p-foot">${pct(pctVal(p.trend, p.avg))} vs avg sell</div></div>
-          <div class="pcard"><div class="p-label">From</div><div class="p-val">${money(p.low)}</div><div class="p-foot">lowest listing</div></div>
+          <div class="pcard"><div class="p-label">Lowest listing</div><div class="p-val eur">${money(p.trend)}</div><div class="p-foot">${pct(pctVal(p.trend, p.avg))} vs avg sell</div></div>
+          <div class="pcard"><div class="p-label">From</div><div class="p-val">${money(p.low)}</div><div class="p-foot">lowest EU listing</div></div>
           <div class="pcard"><div class="p-label">Avg sell price</div><div class="p-val">${money(p.avg)}</div><div class="p-foot">Cardmarket average</div></div>
         </div>
         <div class="links"><a class="btn" href="${esc(p.cm_url)}" target="_blank" rel="noopener">View on Cardmarket ↗</a></div>
@@ -467,7 +464,7 @@ async function renderSealedDetail(id) {
           <div class="chart-note" id="chart-note"></div>
         </section>
       </div>`;
-    const ser = [["trend", "Trend (EUR)", "#d9ae5c"], ["low", "From (EUR)", "#8a7a55"]];
+    const ser = [["trend", "Lowest (EUR)", "#d9ae5c"], ["low", "From (EUR)", "#8a7a55"]];
     $$("#range button").forEach((b) => b.addEventListener("click", () => {
       state.range = b.dataset.range;
       $$("#range button").forEach((x) => x.classList.toggle("active", x === b));

@@ -8,11 +8,13 @@ from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from . import api as api_mod
+from . import app_api
 from . import database
 from . import sealed_snapshot as sealed_snapshot_mod
 from . import snapshot as snapshot_mod
@@ -42,6 +44,15 @@ class NoCacheHTMLMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(NoCacheHTMLMiddleware)
 
+# The read-only API may be served from a different origin (e.g. a local static
+# copy of the frontend pointing at the NUC over Tailscale).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
+
 RANGE_DAYS = {"30d": 30, "3m": 90, "6m": 180, "1y": 365, "all": None}
 
 
@@ -62,6 +73,9 @@ def index() -> FileResponse:
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# View-model API for the rebuilt frontend (mirrors the real data, flat shape).
+app.include_router(app_api.router)
 
 
 # --------------------------------------------------------------------------- #
