@@ -3,63 +3,45 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="cache-control" content="no-cache, no-store, must-revalidate" />
-  <meta name="pragma" content="no-cache" />
   <title>Lorcana Price Tracker</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/style.css?v=13" />
+  <meta name="description" content="Disney Lorcana card and sealed product prices from Cardmarket (EUR) and TCGPlayer (USD), with daily snapshots and market movers." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2l11 14-11 14L5 16z' fill='%23d9ae5c'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://api.fontshare.com" />
+  <link href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600&f[]=zodiak@500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css?v=1" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+  <script>
+    // Served by the FastAPI app on the same origin; override for a standalone static host.
+    window.API_BASE = "";
+    if (window.API_BASE.startsWith("__")) window.API_BASE = "http://localhost:8000";
+  </script>
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">
-      <span class="brand-mark">◆</span>
-      <div>
-        <h1>Lorcana Price Tracker</h1>
-        <p class="tagline">Cardmarket · TCGPlayer · PSA 10</p>
-      </div>
-    </div>
-    <nav class="tabs" role="tablist">
-      <button class="tab active" data-tab="cards" role="tab" aria-selected="true">Cards</button>
-      <button class="tab" data-tab="sealed" role="tab" aria-selected="false">Sealed Products</button>
+    <a class="brand" href="#/" aria-label="Lorcana Price Tracker home">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2l11 14-11 14L5 16z" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 9l5.5 7L16 23l-5.5-7z" fill="currentColor"/></svg>
+      <span class="brand-text">Lorcana <em>Price Tracker</em></span>
+    </a>
+    <nav class="tabs" aria-label="Sections">
+      <a href="#/" data-nav="cards" class="tab">Cards</a>
+      <a href="#/market" data-nav="market" class="tab">Market</a>
+      <a href="#/sealed" data-nav="sealed" class="tab">Sealed</a>
     </nav>
     <div class="search-wrap">
-      <input id="search" type="search" placeholder="Search cards by name…" autocomplete="off" />
+      <svg class="search-icon" viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M13 13l4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      <input id="search" type="search" placeholder="Search any card…" autocomplete="off" aria-label="Search cards" />
       <ul id="search-results" class="search-results" hidden></ul>
     </div>
-    <div class="status-pill" id="status-pill" title="API status">…</div>
+    <div class="status-pill" id="status-pill" title="Data status">Loading…</div>
   </header>
 
-  <main class="layout">
-    <aside class="sidebar" id="sidebar">
-      <h2>Sets</h2>
-      <div class="set-list" id="set-list">
-        <p class="muted">Loading sets…</p>
-      </div>
-    </aside>
-
-    <section class="content" id="content">
-      <div class="empty-state" id="empty-state">
-        <div class="empty-icon">◇</div>
-        <h2>Track Disney Lorcana card prices</h2>
-        <p>Pick a set on the left, or search for a card above. Prices are cached locally in SQLite and snapshotted daily for trend graphs.</p>
-      </div>
-    </section>
-  </main>
-
-  <div id="card-modal" class="modal" hidden>
-    <div class="modal-card">
-      <button class="modal-close" id="modal-close" aria-label="Close">×</button>
-      <div class="modal-body" id="modal-body"></div>
-    </div>
-  </div>
+  <main id="content" class="content" tabindex="-1"></main>
 
   <footer class="footer">
-    <span>Data via cardmarket-api.com (RapidAPI) · lorcana-api.com. Prices for reference only.</span>
+    <span>Prices: <a href="https://www.cardmarket.com/en/Lorcana" target="_blank" rel="noopener">Cardmarket</a> public price guide (EUR) · TCGPlayer market via <a href="https://lorcast.com" target="_blank" rel="noopener">Lorcast</a> (USD). Snapshotted daily. Reference only.</span>
+    <span>Rebuilt from <a href="https://github.com/oconnell-carl/lorcana-tracker" target="_blank" rel="noopener">oconnell-carl/lorcana-tracker</a></span>
   </footer>
 
-  <script src="/static/app.js?v=8"></script>
+  <script src="/static/app.js?v=1"></script>
 </body>
 </html>

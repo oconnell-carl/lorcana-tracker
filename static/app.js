@@ -1,1084 +1,506 @@
-/* Lorcana Price Tracker frontend */
+/* Lorcana Price Tracker frontend (rebuilt from oconnell-carl/lorcana-tracker static/app.js) */
 "use strict";
 
-const $ = (sel, root = document) => root.querySelector(sel);
-const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+const content = $("#content");
 
 const state = {
-  // Active tab: 'cards' or 'sealed'
-  activeTab: "cards",
-
-  // Cards state
   sets: [],
-  currentSetId: null,
-  currentCardId: null,
-  currentRange: "30d",
-  chart: null,
-  sortBy: "name",
-  sortDir: "asc",
-  rarityFilter: "all",
-
-  // Sealed products state
-  sealedProducts: [],
-  sealedView: "list", // 'list' | 'detail'
-  currentSealedId: null,
-  sealedSortBy: "name",
-  sealedSortDir: "asc",
-  sealedTypeFilter: "all",
-  sealedTypes: [],
+  setView: null, // { set, cards }
+  sortBy: "num", sortDir: "asc", rarity: "all", ink: "all", filter: "",
+  sealed: null, sealedType: "all", sealedSort: "trend", sealedDir: "desc", sealedFilter: "",
+  range: "all", chart: null, status: null,
 };
 
-const SOURCES = [
-  { key: "cardmarket", label: "Cardmarket (EUR)", color: "#4ade80", currency: "EUR" },
-  { key: "tcgplayer", label: "TCGPlayer (USD)", color: "#60a5fa", currency: "USD" },
-  { key: "psa10", label: "PSA 10", color: "#fbbf24", currency: "—" },
-];
-
-const RARITY_ORDER = {
-  "Iconic": 0, "Enchanted": 1, "Epic": 2, "Legendary": 3,
-  "Super_rare": 4, "rare": 5, "Uncommon": 6, "Common": 7,
-  "Promo": 8, "Oversized": 9,
-};
-
-const RARITY_LABELS = {
-  "Iconic": "Iconic", "Enchanted": "Enchanted", "Epic": "Epic",
-  "Legendary": "Legendary", "Super_rare": "Super Rare", "rare": "Rare",
-  "Uncommon": "Uncommon", "Common": "Common", "Promo": "Promo", "Oversized": "Oversized",
-};
+const RARITY_ORDER = { Iconic: 0, Enchanted: 1, Epic: 2, Legendary: 3, Super_rare: 4, Rare: 5, Uncommon: 6, Common: 7, Promo: 8 };
+const RARITY_LABEL = { Super_rare: "Super Rare" };
+const INKS = ["Amber", "Amethyst", "Emerald", "Ruby", "Sapphire", "Steel"];
+const rl = (r) => RARITY_LABEL[r] || r || "—";
 
 async function api(path) {
-  const r = await fetch(path);
+  const r = await fetch(`${window.API_BASE}/api${path}`);
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
   return r.json();
 }
 
-function typeBadgeClass(type) {
-  if (!type) return "type-default";
-  // Convert "Collector's Set" -> "type-collector-s-set"
-  return "type-" + type.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+$/, "");
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function money(v, cur = "EUR") {
+  if (v == null || !isFinite(v)) return `<span class="na">—</span>`;
+  const sym = cur === "USD" ? "$" : "€";
+  const d = v >= 1000 ? 0 : 2;
+  return `${sym}${Number(v).toLocaleString("en-IE", { minimumFractionDigits: d, maximumFractionDigits: d })}`;
+}
+function pctVal(a, b) { return a == null || b == null || !b ? null : ((a - b) / b) * 100; }
+function pct(v) {
+  if (v == null || !isFinite(v)) return `<span class="na">—</span>`;
+  const cls = v > 3 ? "up" : v < -3 ? "down" : "flat";
+  return `<span class="pct ${cls}">${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(1)}%</span>`;
+}
+const rarityChip = (r) => r ? `<span class="rarity r-${esc(r.toLowerCase())}">${esc(rl(r))}</span>` : "";
+const inkDot = (ink) => ink ? `<span class="ink ink-${esc(ink.toLowerCase())}" title="${esc(ink)}"></span>` : "";
+const usdBest = (c) => c.usd ?? c.usd_foil;
+
+function thumb(c, cls = "thumb") {
+  return c.image_small
+    ? `<img class="${cls}" src="${esc(c.image_small)}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'${cls} ph'}))" />`
+    : `<span class="${cls} ph"></span>`;
 }
 
-function fmtPrice(val, cur) {
-  if (val == null || val === "") return `<span class="na">—</span>`;
-  const num = Number(val);
-  if (!isFinite(num)) return `<span class="na">—</span>`;
-  const sym = cur === "USD" ? "$" : cur === "EUR" ? "€" : "";
-  return `${sym}${num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+function skeleton(rows = 8) {
+  return `<div class="skel-head"></div>` + Array.from({ length: rows }, () => `<div class="skel-row"></div>`).join("");
+}
+function errorBox(e) {
+  return `<div class="empty"><h2>Couldn't load data</h2><p>${esc(e.message)}. The data service may be waking up — try again in a few seconds.</p><button class="btn" onclick="route()">Retry</button></div>`;
 }
 
-function escapeHtml(s) {
-  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  }[c]));
-}
-
-function rarityLabel(r) {
-  return RARITY_LABELS[r] || r || "—";
-}
-
-// --------------------------------- Status -------------------------------- //
+// ------------------------------------------------------------------ status
 async function loadStatus() {
+  const pill = $("#status-pill");
   try {
-    const s = await api("/api/status");
-    const pill = $("#status-pill");
-    if (s.api_available) {
-      pill.textContent = `● Live API · ${s.set_count} sets · ${s.card_count} cards · ${s.sealed_count} sealed`;
-      pill.classList.add("online");
-      pill.classList.remove("offline");
-    } else {
-      pill.textContent = `○ Cached · ${s.set_count} sets · ${s.card_count} cards · ${s.sealed_count} sealed`;
-      pill.classList.add("offline");
-      pill.classList.remove("online");
-    }
+    const s = await api("/status");
+    state.status = s;
+    const when = s.cardmarket_created_at ? new Date(s.cardmarket_created_at.replace(/([+-]\d\d)(\d\d)$/, "$1:$2")) : null;
+    const d = when ? when.toLocaleDateString("en-IE", { day: "numeric", month: "short" }) : s.last_snapshot;
+    pill.innerHTML = `<span class="dot ${s.refreshing ? "busy" : "ok"}"></span>${s.refreshing ? "Refreshing…" : `Prices ${esc(d)}`} · ${s.snapshot_days} day${s.snapshot_days === 1 ? "" : "s"} tracked`;
+    pill.title = `${s.card_count} cards · ${s.set_count} sets · ${s.sealed_count} sealed products. Last refresh ${s.refreshed_at || "—"}`;
   } catch {
-    $("#status-pill").textContent = "○ Offline";
+    pill.innerHTML = `<span class="dot off"></span>Offline`;
   }
 }
 
-// ---------------------------------- Sets --------------------------------- //
-async function loadSets() {
-  const list = $("#set-list");
-  try {
-    const data = await api("/api/sets");
-    state.sets = data.sets || [];
-    if (!state.sets.length) {
-      list.innerHTML = `<p class="muted">No sets yet. Run the snapshot job to populate.</p>`;
-      return;
-    }
-    list.innerHTML = "";
-    state.sets.forEach((s) => {
-      const el = document.createElement("div");
-      el.className = "set-item";
-      el.dataset.id = s.id;
-      const meta = [s.code, s.release_date, `${s.card_count || 0} cards`].filter(Boolean).join(" · ");
-      el.innerHTML = `<div class="s-name">${escapeHtml(s.name)}</div><div class="s-meta">${escapeHtml(meta)}</div>`;
-      el.addEventListener("click", () => selectSet(s.id, el));
-      list.appendChild(el);
-    });
-    // Also render landing page set grid
-    renderSetGrid();
-  } catch (e) {
-    list.innerHTML = `<p class="muted">Failed to load sets: ${escapeHtml(e.message)}</p>`;
-  }
+// ------------------------------------------------------------------ router
+function setNav(which) {
+  $$(".tab").forEach((t) => t.classList.toggle("active", t.dataset.nav === which));
 }
-
-function renderSetGrid() {
-  const content = $("#content");
-  if (state.currentSetId || state.currentCardId) return; // Only show on landing
-  const sets = state.sets;
-  if (!sets.length) return;
-
-  let cards = "";
-  for (const s of sets) {
-    const logo = s.logo
-      ? `<img class="set-logo" src="${escapeHtml(s.logo)}" alt="${escapeHtml(s.name)}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><div class="set-logo-placeholder" style="display:none">${escapeHtml(s.name.charAt(0))}</div>`
-      : `<div class="set-logo-placeholder">${escapeHtml(s.name.charAt(0))}</div>`;
-    const cardCount = s.card_count || 0;
-    cards += `
-      <div class="set-card" data-set-id="${s.id}">
-        <div class="set-card-banner">${logo}</div>
-        <div class="set-card-body">
-          <div class="set-card-name">${escapeHtml(s.name)}</div>
-          <div class="set-card-meta">${cardCount} cards</div>
-        </div>
-      </div>`;
-  }
-
-  content.innerHTML = `
-    <div class="landing">
-      <h2 class="landing-title">Lorcana Sets</h2>
-      <div class="set-grid">${cards}</div>
-    </div>`;
-
-  $$('#content .set-card').forEach((el) =>
-    el.addEventListener("click", () => {
-      const setId = el.dataset.setId;
-      const sidebarEl = $(`.set-item[data-id="${setId}"]`);
-      selectSet(Number(setId), sidebarEl);
-    })
-  );
-}
-
-async function selectSet(id, el) {
-  state.currentSetId = id;
-  $$(".set-item").forEach((x) => x.classList.remove("active"));
-  if (el) el.classList.add("active");
-  await renderSetView(id);
-}
-
-async function renderSetView(setId) {
-  const content = $("#content");
-  content.innerHTML = `<div class="muted">Loading cards…</div>`;
-  try {
-    const data = await api(`/api/sets/${setId}/cards`);
-    const set = data.set;
-    let cards = data.cards || [];
-
-    // Store original prices for sorting
-    cards = cards.map(c => ({
-      ...c,
-      _cmPrice: c.prices?.cardmarket?.price ?? null,
-      _tcgPrice: c.prices?.tcgplayer?.price ?? null,
-      _psaPrice: c.prices?.psa10?.price ?? null,
-      _avg7d: c.prices?.cardmarket?.avg_7d ?? null,
-      _avg30d: c.prices?.cardmarket?.avg_30d ?? null,
-      _availItems: c.prices?.cardmarket?.available_items ?? null,
-    }));
-
-    state._setView = { set, cards };
-    renderCardTable(set, cards);
-  } catch (e) {
-    content.innerHTML = `<p class="muted">Error: ${escapeHtml(e.message)}</p>`;
-  }
-}
-
-function pctDiff(current, average) {
-  if (current == null || average == null || average === 0) return null;
-  return ((current - average) / average) * 100;
-}
-
-function fmtPct(val) {
-  if (val == null || !isFinite(val)) return `<span class="na">—</span>`;
-  const sign = val >= 0 ? "+" : "";
-  const cls = val > 5 ? "pct-up" : val < -5 ? "pct-down" : "pct-flat";
-  return `<span class="${cls}">${sign}${val.toFixed(1)}%</span>`;
-}
-
-function getFilteredSortedCards() {
-  const { cards } = state._setView;
-  let filtered = cards;
-  if (state.rarityFilter !== "all") {
-    filtered = filtered.filter(c => c.rarity === state.rarityFilter);
-  }
-  const sorted = [...filtered].sort((a, b) => {
-    let cmp = 0;
-    switch (state.sortBy) {
-      case "name":
-        cmp = a.name.localeCompare(b.name);
-        break;
-      case "rarity":
-        cmp = (RARITY_ORDER[a.rarity] ?? 99) - (RARITY_ORDER[b.rarity] ?? 99);
-        break;
-      case "cardmarket":
-        cmp = (a._cmPrice ?? Infinity) - (b._cmPrice ?? Infinity);
-        break;
-      case "tcgplayer":
-        cmp = (a._tcgPrice ?? Infinity) - (b._tcgPrice ?? Infinity);
-        break;
-      case "psa10":
-        cmp = (a._psaPrice ?? Infinity) - (b._psaPrice ?? Infinity);
-        break;
-      case "avg7d":
-        cmp = (a._avg7d ?? Infinity) - (b._avg7d ?? Infinity);
-        break;
-      case "avg30d":
-        cmp = (a._avg30d ?? Infinity) - (b._avg30d ?? Infinity);
-        break;
-      case "supply":
-        cmp = (a._availItems ?? -Infinity) - (b._availItems ?? -Infinity);
-        break;
-    }
-    return state.sortDir === "desc" ? -cmp : cmp;
-  });
-  return sorted;
-}
-
-function renderCardTable(set, cards) {
-  const content = $("#content");
-  const filtered = getFilteredSortedCards();
-  const count = filtered.length;
-
-  // Rarity filter buttons
-  const rarityCounts = {};
-  cards.forEach(c => { rarityCounts[c.rarity] = (rarityCounts[c.rarity] || 0) + 1; });
-  const rarityButtons = ["all", "Iconic", "Enchanted", "Epic", "Legendary", "Promo", "Super_rare", "rare", "Uncommon", "Common"]
-    .filter(r => r === "all" || rarityCounts[r])
-    .map(r => {
-      const label = r === "all" ? "All" : rarityLabel(r);
-      const active = state.rarityFilter === r ? "active" : "";
-      const cnt = r === "all" ? cards.length : (rarityCounts[r] || 0);
-      return `<button class="rarity-btn ${active}" data-rarity="${r}">${label} <span class="rb-count">${cnt}</span></button>`;
-    }).join("");
-
-  // Sort indicators
-  const sortIcon = (col) => {
-    if (state.sortBy !== col) return "↕";
-    return state.sortDir === "asc" ? "↑" : "↓";
-  };
-
-  let rows = "";
-  if (!count) {
-    rows = `<tr><td colspan="12" class="na" style="text-align:center;padding:30px">No cards match this filter</td></tr>`;
-  } else {
-    for (const c of filtered) {
-      const cm = c.prices?.cardmarket;
-      const tp = c.prices?.tcgplayer;
-      const psa = c.prices?.psa10;
-      const vs7d = pctDiff(cm?.price, cm?.avg_7d);
-      const vs30d = pctDiff(cm?.price, cm?.avg_30d);
-      const supply = cm?.available_items;
-      const thumb = c.image_url
-        ? `<img class="card-thumb" src="${escapeHtml(c.image_url)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><span class="card-thumb-placeholder" style="display:none">◇</span>`
-        : `<span class="card-thumb-placeholder">◇</span>`;
-      rows += `
-        <tr data-card-id="${c.id}">
-          <td class="thumb-cell">${thumb}</td>
-          <td><strong>${escapeHtml(c.full_name || c.name)}</strong></td>
-          <td class="num">${escapeHtml(c.card_number || "")}</td>
-          <td>${c.rarity ? `<span class="rarity rarity-${c.rarity.toLowerCase()}">${escapeHtml(rarityLabel(c.rarity))}</span>` : `<span class="na">—</span>`}</td>
-          <td class="price-eur">${fmtPrice(cm?.price, cm?.currency || "EUR")}</td>
-          <td class="price-avg">${fmtPrice(cm?.avg_7d, cm?.currency || "EUR")}</td>
-          <td class="price-avg">${fmtPrice(cm?.avg_30d, cm?.currency || "EUR")}</td>
-          <td class="pct-cell">${fmtPct(vs7d)}</td>
-          <td class="pct-cell">${fmtPct(vs30d)}</td>
-          <td class="price-usd">${fmtPrice(tp?.price, tp?.currency || "USD")}</td>
-          <td class="price-psa">${fmtPrice(psa?.price, psa?.currency || "USD")}</td>
-          <td class="num supply-cell" title="Number of listings on Cardmarket">${supply != null ? supply : `<span class="na">—</span>`}</td>
-        </tr>`;
-    }
-  }
-
-  content.innerHTML = `
-    <div class="section-head"><h2>${escapeHtml(set.name)}</h2><span class="count">${count} cards</span></div>
-    <div class="rarity-filters">${rarityButtons}</div>
-    <div class="card-table-wrap">
-      <table class="cards">
-        <thead><tr>
-          <th class="thumb-col"></th>
-          <th class="sortable" data-sort="name">Name ${sortIcon("name")}</th>
-          <th>#</th>
-          <th class="sortable" data-sort="rarity">Rarity ${sortIcon("rarity")}</th>
-          <th class="sortable" data-sort="cardmarket">CM Price ${sortIcon("cardmarket")}</th>
-          <th class="sortable" data-sort="avg7d">7D Avg ${sortIcon("avg7d")}</th>
-          <th class="sortable" data-sort="avg30d">30D Avg ${sortIcon("avg30d")}</th>
-          <th>% vs 7D</th>
-          <th>% vs 30D</th>
-          <th class="sortable" data-sort="tcgplayer">TCGPlayer ${sortIcon("tcgplayer")}</th>
-          <th class="sortable" data-sort="psa10">PSA 10 ${sortIcon("psa10")}</th>
-          <th class="sortable" data-sort="supply">Supply ${sortIcon("supply")}</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
-
-  // Wire up row clicks
-  $$("#content tbody tr[data-card-id]").forEach((tr) =>
-    tr.addEventListener("click", () => openCardPage(tr.dataset.cardId))
-  );
-
-  // Wire up sortable headers
-  $$("#content th.sortable").forEach((th) =>
-    th.addEventListener("click", () => {
-      const col = th.dataset.sort;
-      if (state.sortBy === col) {
-        state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
-      } else {
-        state.sortBy = col;
-        state.sortDir = col === "name" ? "asc" : "desc";
-      }
-      renderCardTable(state._setView.set, state._setView.cards);
-    })
-  );
-
-  // Wire up rarity filter buttons
-  $$("#content .rarity-btn").forEach((btn) =>
-    btn.addEventListener("click", () => {
-      state.rarityFilter = btn.dataset.rarity;
-      renderCardTable(state._setView.set, state._setView.cards);
-    })
-  );
-}
-
-// ------------------------------ Card detail page ------------------------------ //
-async function openCardPage(cardId) {
-  state.currentCardId = cardId;
-  const content = $("#content");
-  content.innerHTML = `<div class="muted">Loading card…</div>`;
-  // Scroll to top
+async function route() {
+  if (state.chart) { state.chart.destroy(); state.chart = null; }
+  const h = location.hash.replace(/^#\/?/, "");
+  const [view, id] = h.split("/").map(decodeURIComponent);
   window.scrollTo(0, 0);
+  if (view === "set" && id) { setNav("cards"); return renderSet(id); }
+  if (view === "card" && id) { setNav("cards"); return renderCard(id); }
+  if (view === "market") { setNav("market"); return renderMarket(); }
+  if (view === "sealed" && id) { setNav("sealed"); return renderSealedDetail(id); }
+  if (view === "sealed") { setNav("sealed"); return renderSealed(); }
+  setNav("cards");
+  return renderSets();
+}
+window.addEventListener("hashchange", route);
+
+// ------------------------------------------------------------------ sets landing
+async function renderSets() {
+  content.innerHTML = `<div class="page">${skeleton(6)}</div>`;
   try {
-    const data = await api(`/api/cards/${cardId}`);
-    await renderCardPage(data.card);
-  } catch (e) {
-    content.innerHTML = `<p class="muted">Error: ${escapeHtml(e.message)}</p>`;
-  }
+    if (!state.sets.length) state.sets = (await api("/sets")).sets;
+    const main = state.sets.filter((s) => /^\d+$/.test(s.code)).sort((a, b) => Number(b.code) - Number(a.code));
+    const other = state.sets.filter((s) => !/^\d+$/.test(s.code));
+    const tile = (s) => `
+      <a class="set-tile" href="#/set/${encodeURIComponent(s.code)}">
+        <div class="set-art">${s.cover ? `<img src="${esc(s.cover)}" alt="" loading="lazy" />` : ""}<span class="set-code">${esc(s.code)}</span></div>
+        <div class="set-body">
+          <div class="set-name">${esc(s.name)}</div>
+          <div class="set-meta"><span>${s.card_count} cards</span><span>${s.release_date ? new Date(s.release_date).getFullYear() : ""}</span></div>
+          <div class="set-value"><span class="lbl">Set value (trend)</span><span class="tab-num">${money(s.set_value)}</span></div>
+        </div>
+      </a>`;
+    content.innerHTML = `
+      <div class="page">
+        <div class="page-head">
+          <div><h1>Sets</h1><p class="sub">Pick a set to see every card with Cardmarket and TCGPlayer prices.</p></div>
+        </div>
+        <h2 class="section-label">Main sets</h2>
+        <div class="set-grid">${main.map(tile).join("")}</div>
+        <h2 class="section-label">Promos & special releases</h2>
+        <div class="set-grid compact">${other.map(tile).join("")}</div>
+      </div>`;
+  } catch (e) { content.innerHTML = errorBox(e); }
 }
 
-async function renderCardPage(card) {
-  const content = $("#content");
-  const cm = card.prices?.cardmarket;
-  const tp = card.prices?.tcgplayer;
-  const psa = card.prices?.psa10;
-  const img = card.image_url
-    ? `<img class="detail-img" src="${escapeHtml(card.image_url)}" alt="${escapeHtml(card.full_name || card.name)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><div class="detail-img empty" style="display:none">No image available</div>`
-    : `<div class="detail-img empty">No image</div>`;
+// ------------------------------------------------------------------ set table
+async function renderSet(code) {
+  content.innerHTML = `<div class="page">${skeleton()}</div>`;
+  try {
+    if (!state.setView || state.setView.set.code !== code) {
+      state.setView = await api(`/sets/${encodeURIComponent(code)}/cards`);
+      state.rarity = "all"; state.ink = "all"; state.filter = ""; state.sortBy = "num"; state.sortDir = "asc";
+    }
+    drawSet();
+  } catch (e) { content.innerHTML = errorBox(e); }
+}
 
-  const setName = card.set_name || state.sets.find(s => s.id === card.set_id)?.name || "—";
+function sortedCards() {
+  const { cards } = state.setView;
+  const f = state.filter.toLowerCase();
+  let list = cards.filter((c) =>
+    (state.rarity === "all" || c.rarity === state.rarity) &&
+    (state.ink === "all" || c.ink === state.ink) &&
+    (!f || (c.full_name || "").toLowerCase().includes(f)));
+  const key = {
+    num: (c) => c.num_sort, name: (c) => c.full_name, rarity: (c) => RARITY_ORDER[c.rarity] ?? 99,
+    trend: (c) => c.cm_trend, low: (c) => c.cm_low, avg7: (c) => c.cm_avg7, avg30: (c) => c.cm_avg30,
+    vs30: (c) => pctVal(c.cm_trend, c.cm_avg30), usd: usdBest, foil: (c) => c.usd_foil,
+  }[state.sortBy];
+  list = [...list].sort((a, b) => {
+    const x = key(a), y = key(b);
+    if (x == null && y == null) return 0;
+    if (x == null) return 1;
+    if (y == null) return -1;
+    const cmp = typeof x === "string" ? x.localeCompare(y) : x - y;
+    return state.sortDir === "asc" ? cmp : -cmp;
+  });
+  return list;
+}
+
+function drawSet() {
+  const { set, cards } = state.setView;
+  const list = sortedCards();
+  const counts = {};
+  cards.forEach((c) => (counts[c.rarity] = (counts[c.rarity] || 0) + 1));
+  const rarities = ["all", ...Object.keys(RARITY_ORDER).filter((r) => counts[r])];
+  const total = cards.reduce((s, c) => s + (c.cm_trend || 0), 0);
+  const top = [...cards].sort((a, b) => (b.cm_trend || 0) - (a.cm_trend || 0))[0];
+  const priced = cards.filter((c) => c.cm_trend != null).length;
+  const arrow = (k) => state.sortBy === k ? (state.sortDir === "asc" ? "↑" : "↓") : "";
+  const th = (k, label, cls = "") => `<th class="sortable ${cls}" data-sort="${k}" aria-sort="${state.sortBy === k ? (state.sortDir === "asc" ? "ascending" : "descending") : "none"}">${label}<span class="arrow">${arrow(k)}</span></th>`;
+
+  const rows = list.map((c) => `
+    <tr data-id="${c.id}" tabindex="0">
+      <td class="c-thumb">${thumb(c)}</td>
+      <td class="c-num tab-num">${esc(c.card_number)}</td>
+      <td class="c-name"><div class="nm">${inkDot(c.ink)}<span>${esc(c.name)}</span></div>${c.version ? `<div class="ver">${esc(c.version)}</div>` : ""}</td>
+      <td class="hide-sm">${rarityChip(c.rarity)}</td>
+      <td class="num eur strong">${money(c.cm_trend)}</td>
+      <td class="num hide-md">${money(c.cm_low)}</td>
+      <td class="num hide-md">${money(c.cm_avg7)}</td>
+      <td class="num hide-sm">${money(c.cm_avg30)}</td>
+      <td class="num hide-sm">${pct(pctVal(c.cm_trend, c.cm_avg30))}</td>
+      <td class="num usd">${money(c.usd, "USD")}</td>
+      <td class="num usd hide-md">${money(c.usd_foil, "USD")}</td>
+    </tr>`).join("") || `<tr><td colspan="11" class="empty-row">No cards match these filters.</td></tr>`;
 
   content.innerHTML = `
-    <div class="card-detail-page">
-      <button class="back-btn" id="back-btn">← Back to ${escapeHtml(setName)}</button>
-      <div class="detail-head">
-        ${img}
-        <div class="detail-info">
-          <h2>${escapeHtml(card.full_name || card.name)}</h2>
-          ${card.subtitle ? `<div class="card-subtitle">${escapeHtml(card.subtitle)}</div>` : ''}
-          <div class="sub">
-            ${escapeHtml(setName)} · #${escapeHtml(card.card_number || "—")}
-            ${card.rarity ? ` · <span class="rarity rarity-${card.rarity.toLowerCase()}">${escapeHtml(rarityLabel(card.rarity))}</span>` : ""}
-          </div>
-          <div class="price-grid">
-            <div class="price-card">
-              <div class="pc-label">Cardmarket</div>
-              <div class="pc-value eur">${fmtPrice(cm?.price, cm?.currency || "EUR")}</div>
-              <div class="pc-foot">${cm?.date ? `as of ${cm.date}` : "EUR · lowest NM"}</div>
-            </div>
-            <div class="price-card">
-              <div class="pc-label">TCGPlayer</div>
-              <div class="pc-value usd">${fmtPrice(tp?.price, tp?.currency || "USD")}</div>
-              <div class="pc-foot">${tp?.date ? `as of ${tp.date}` : "USD · market"}</div>
-            </div>
-            <div class="price-card">
-              <div class="pc-label">PSA 10</div>
-              <div class="pc-value psa">${fmtPrice(psa?.price, psa?.currency || "USD")}</div>
-              <div class="pc-foot">${psa?.date ? `as of ${psa.date}` : "graded"}</div>
-            </div>
-          </div>
+    <div class="page">
+      <a class="back" href="#/">← All sets</a>
+      <div class="page-head">
+        <div><h1>${esc(set.name)}</h1><p class="sub">Set ${esc(set.code)} · ${set.release_date ? new Date(set.release_date).toLocaleDateString("en-IE", { day: "numeric", month: "long", year: "numeric" }) : ""}</p></div>
+      </div>
+      <div class="kpis">
+        <div class="kpi"><div class="k-label">Cards</div><div class="k-val tab-num">${cards.length}</div><div class="k-foot">${priced} with Cardmarket price</div></div>
+        <div class="kpi"><div class="k-label">Full set value</div><div class="k-val tab-num eur">${money(total)}</div><div class="k-foot">sum of trend prices</div></div>
+        <div class="kpi"><div class="k-label">Top card</div><div class="k-val tab-num eur">${top ? money(top.cm_trend) : "—"}</div><div class="k-foot">${top ? esc(top.full_name) : ""}</div></div>
+      </div>
+      <div class="toolbar">
+        <div class="chips" role="group" aria-label="Rarity">${rarities.map((r) => `<button class="chip ${state.rarity === r ? "active" : ""}" data-rarity="${r}">${r === "all" ? "All" : esc(rl(r))}<span class="cnt">${r === "all" ? cards.length : counts[r]}</span></button>`).join("")}</div>
+        <div class="toolbar-right">
+          <div class="inks" role="group" aria-label="Ink">${["all", ...INKS].map((i) => `<button class="ink-btn ${state.ink === i ? "active" : ""}" data-ink="${i}" title="${i === "all" ? "All inks" : i}">${i === "all" ? "All" : `<span class="ink ink-${i.toLowerCase()}"></span>`}</button>`).join("")}</div>
+          <input class="filter" id="set-filter" type="search" placeholder="Filter this set" value="${esc(state.filter)}" aria-label="Filter cards in this set" />
         </div>
       </div>
-
-      <h3 class="chart-title">Price Trend</h3>
-      <div class="range-toggle" id="range-toggle">
-        <button data-range="30d" class="active">30D</button>
-        <button data-range="3m">3M</button>
-        <button data-range="6m">6M</button>
-        <button data-range="1y">1Y</button>
-        <button data-range="all">All</button>
-      </div>
-      <div class="chart-wrap"><canvas id="price-chart"></canvas></div>
-      <div class="legend" id="chart-legend"></div>
-
-      <h3 class="chart-title">Price Details</h3>
-      <div class="card-table-wrap">
-        <table class="cards detail-prices">
+      <div class="table-wrap">
+        <table class="grid">
           <thead><tr>
-            <th>Source</th><th>Price</th><th>Currency</th><th>As of</th>
+            <th class="c-thumb"></th>${th("num", "#")}${th("name", "Card")}${th("rarity", "Rarity", "hide-sm")}
+            ${th("trend", "CM trend", "num")}${th("low", "CM from", "num hide-md")}${th("avg7", "7D avg", "num hide-md")}${th("avg30", "30D avg", "num hide-sm")}${th("vs30", "vs 30D", "num hide-sm")}
+            ${th("usd", "TCGP", "num")}${th("foil", "TCGP foil", "num hide-md")}
           </tr></thead>
-          <tbody>
-            ${cm ? `<tr><td>Cardmarket (lowest NM, English)</td><td class="price-eur">${fmtPrice(cm?.price, cm?.currency || "EUR")}</td><td>${escapeHtml(cm?.currency || "EUR")}</td><td>${escapeHtml(cm?.date || "—")}</td></tr>` : ""}
-            ${tp ? `<tr><td>TCGPlayer (market)</td><td class="price-usd">${fmtPrice(tp?.price, tp?.currency || "USD")}</td><td>${escapeHtml(tp?.currency || "USD")}</td><td>${escapeHtml(tp?.date || "—")}</td></tr>` : ""}
-            ${psa ? `<tr><td>PSA 10 (graded)</td><td class="price-psa">${fmtPrice(psa?.price, psa?.currency || "USD")}</td><td>${escapeHtml(psa?.currency || "—")}</td><td>${escapeHtml(psa?.date || "—")}</td></tr>` : ""}
-            ${!cm && !tp && !psa ? `<tr><td colspan="4" class="na" style="text-align:center;padding:20px">No price data yet</td></tr>` : ""}
-          </tbody>
+          <tbody>${rows}</tbody>
         </table>
       </div>
-    </div>
-  `;
-
-  // Back button
-  $("#back-btn").addEventListener("click", () => {
-    if (state.currentSetId) renderSetView(state.currentSetId);
-  });
-
-  // Range toggle
-  $$("#range-toggle button").forEach((b) =>
-    b.addEventListener("click", () => {
-      $$("#range-toggle button").forEach((x) => x.classList.remove("active"));
-      b.classList.add("active");
-      state.currentRange = b.dataset.range;
-      loadChart(card.id);
-    })
-  );
-
-  await loadChart(card.id);
-}
-
-async function loadChart(cardId) {
-  const canvas = $("#price-chart");
-  const legendEl = $("#chart-legend");
-  const wrap = canvas?.parentElement;
-  if (!canvas || !wrap) return;
-
-  try {
-    const data = await api(`/api/cards/${cardId}/history?range=${state.currentRange}`);
-    const series = data.series || {};
-    const sources = SOURCES.filter((s) => series[s.key] && series[s.key].length);
-    if (!sources.length) {
-      wrap.innerHTML = `<div class="chart-empty">No historical data yet. Daily snapshots build the trend over time.</div>`;
-      legendEl.innerHTML = "";
-      return;
-    }
-    const dateSet = new Set();
-    sources.forEach((s) => series[s.key].forEach((p) => dateSet.add(p.date)));
-    const labels = Array.from(dateSet).sort();
-    const datasets = sources.map((s) => {
-      const map = Object.fromEntries(series[s.key].map((p) => [p.date, p.price]));
-      return {
-        label: s.label,
-        data: labels.map((d) => (d in map ? map[d] : null)),
-        borderColor: s.color,
-        backgroundColor: s.color + "22",
-        tension: 0.3,
-        spanGaps: true,
-        pointRadius: 2,
-        borderWidth: 2,
-      };
-    });
-    if (state.chart) state.chart.destroy();
-    state.chart = new Chart(canvas, {
-      type: "line",
-      data: { labels, datasets },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: "index", intersect: false },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            backgroundColor: "#1a2030",
-            borderColor: "#2e3750",
-            borderWidth: 1,
-            callbacks: {
-              label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y ?? "—"}`,
-            },
-          },
-        },
-        scales: {
-          x: { ticks: { color: "#5c6680", maxRotation: 0, autoSkip: true }, grid: { color: "rgba(255,255,255,0.04)" } },
-          y: { ticks: { color: "#5c6680" }, grid: { color: "rgba(255,255,255,0.06)" } },
-        },
-      },
-    });
-    legendEl.innerHTML = sources
-      .map((s) => `<span><span class="dot" style="background:${s.color}"></span>${s.label} (${series[s.key].length} pts)</span>`)
-      .join("");
-  } catch (e) {
-    wrap.innerHTML = `<div class="chart-empty">Error loading history: ${escapeHtml(e.message)}</div>`;
-  }
-}
-
-// --------------------------------- Search -------------------------------- //
-let searchTimer;
-function initSearch() {
-  const input = $("#search");
-  const results = $("#search-results");
-  input.addEventListener("input", () => {
-    clearTimeout(searchTimer);
-    const q = input.value.trim();
-    if (q.length < 2) {
-      results.hidden = true;
-      return;
-    }
-    // Search cards in the cards tab, sealed products in the sealed tab.
-    const isSealed = state.activeTab === "sealed";
-    searchTimer = setTimeout(async () => {
-      try {
-        if (isSealed) {
-          const data = await api(`/api/sealed?q=${encodeURIComponent(q)}`);
-          const items = data.products || [];
-          if (!items.length) {
-            results.innerHTML = `<li class="muted">No matches</li>`;
-            results.hidden = false;
-            return;
-          }
-          results.innerHTML = items
-            .slice(0, 12)
-            .map(
-              (p) =>
-                `<li data-id="${p.id}"><span class="r-name">${escapeHtml(p.name)}</span><span class="r-set">${escapeHtml(p.set_name || "")} · ${escapeHtml(p.product_type || "")}</span></li>`
-            )
-            .join("");
-          results.hidden = false;
-          $$("#search-results li").forEach((li) =>
-            li.addEventListener("click", () => {
-              openSealedProductPage(li.dataset.id);
-              results.hidden = true;
-              input.value = "";
-            })
-          );
-        } else {
-          const data = await api(`/api/search?q=${encodeURIComponent(q)}`);
-          const items = data.results || [];
-          if (!items.length) {
-            results.innerHTML = `<li class="muted">No matches</li>`;
-            results.hidden = false;
-            return;
-          }
-          results.innerHTML = items
-            .map(
-              (c) =>
-                `<li data-id="${c.id}"><span class="r-name">${escapeHtml(c.full_name || c.name)}</span><span class="r-set">${escapeHtml(c.set_name || "")} · #${escapeHtml(c.card_number || "")}</span></li>`
-            )
-            .join("");
-          results.hidden = false;
-          $$("#search-results li").forEach((li) =>
-            li.addEventListener("click", () => {
-              openCardPage(li.dataset.id);
-              results.hidden = true;
-              input.value = "";
-            })
-          );
-        }
-      } catch {
-        results.hidden = true;
-      }
-    }, 200);
-  });
-  document.addEventListener("click", (e) => {
-    if (!e.target.closest(".search-wrap")) results.hidden = true;
-  });
-}
-
-// ---------------------------- Tab switching ------------------------------ //
-function initTabs() {
-  $$(".tab").forEach((tab) => {
-    tab.addEventListener("click", () => {
-      const target = tab.dataset.tab;
-      if (target === state.activeTab) return;
-      switchTab(target);
-    });
-  });
-}
-
-function switchTab(tab) {
-  state.activeTab = tab;
-  // Update tab buttons
-  $$(".tab").forEach((t) => {
-    const isActive = t.dataset.tab === tab;
-    t.classList.toggle("active", isActive);
-    t.setAttribute("aria-selected", isActive ? "true" : "false");
-  });
-  // Update sidebar visibility (only relevant on Cards tab)
-  const sidebar = $("#sidebar");
-  sidebar.style.display = tab === "cards" ? "" : "none";
-  // Also collapse the layout grid when sidebar is hidden so content fills width
-  const layout = document.querySelector(".layout");
-  if (layout) {
-    layout.classList.toggle("full-width", tab !== "cards");
-  }
-
-  // Destroy any existing chart
-  if (state.chart) {
-    state.chart.destroy();
-    state.chart = null;
-  }
-
-  // Reset search bar placeholder
-  const search = $("#search");
-  search.placeholder = tab === "cards" ? "Search cards by name…" : "Search sealed products…";
-  search.value = "";
-  $("#search-results").hidden = true;
-
-  // Reset card-specific state when leaving
-  if (tab !== "cards") {
-    state.currentSetId = null;
-    state.currentCardId = null;
-    $$(".set-item").forEach((x) => x.classList.remove("active"));
-  }
-
-  // Reset sealed-specific state when leaving
-  if (tab !== "sealed") {
-    state.currentSealedId = null;
-    state.sealedView = "list";
-  }
-
-  // Load the active view
-  if (tab === "sealed") {
-    loadSealedProducts();
-  } else {
-    renderSetGrid();
-  }
-}
-
-// -------------------------- Sealed products ------------------------------ //
-const SEALED_SOURCES = [
-  { key: "cardmarket", label: "Cardmarket (EUR)", color: "#4ade80", currency: "EUR" },
-];
-
-async function loadSealedProducts() {
-  const content = $("#content");
-  if (state.sealedView === "detail" && state.currentSealedId) {
-    return renderSealedDetail(state.currentSealedId);
-  }
-  content.innerHTML = `<div class="muted">Loading sealed products…</div>`;
-  try {
-    const params = new URLSearchParams();
-    if (state.sealedTypeFilter && state.sealedTypeFilter !== "all") {
-      params.set("type", state.sealedTypeFilter);
-    }
-    const data = await api(`/api/sealed${params.toString() ? "?" + params.toString() : ""}`);
-    state.sealedProducts = data.products || [];
-    state.sealedTypes = data.types || [];
-    renderSealedTable();
-  } catch (e) {
-    content.innerHTML = `<p class="muted">Error loading sealed products: ${escapeHtml(e.message)}</p>`;
-  }
-}
-
-function getFilteredSortedSealed() {
-  let products = state.sealedProducts;
-  // Type filter is already applied server-side via state.sealedTypeFilter, but
-  // also keep a client-side filter in case the dataset changes.
-  if (state.sealedTypeFilter && state.sealedTypeFilter !== "all") {
-    products = products.filter(p => p.product_type === state.sealedTypeFilter);
-  }
-  const sorted = [...products].sort((a, b) => {
-    const cmA = a.prices?.cardmarket || {};
-    const cmB = b.prices?.cardmarket || {};
-    let cmp = 0;
-    switch (state.sealedSortBy) {
-      case "name":
-        cmp = (a.name || "").localeCompare(b.name || "");
-        break;
-      case "type":
-        cmp = (a.product_type || "").localeCompare(b.product_type || "");
-        break;
-      case "set":
-        cmp = (a.set_name || "").localeCompare(b.set_name || "");
-        break;
-      case "price":
-        cmp = (cmA.price ?? Infinity) - (cmB.price ?? Infinity);
-        break;
-      case "avg7d":
-        cmp = (cmA.avg_7d ?? Infinity) - (cmB.avg_7d ?? Infinity);
-        break;
-      case "avg30d":
-        cmp = (cmA.avg_30d ?? Infinity) - (cmB.avg_30d ?? Infinity);
-        break;
-      case "supply":
-        cmp = (cmA.available_items ?? -Infinity) - (cmB.available_items ?? -Infinity);
-        break;
-      case "vs7d":
-        cmp = pctDiff(cmA.price, cmA.avg_7d) - pctDiff(cmB.price, cmB.avg_7d);
-        if (!isFinite(cmp)) cmp = 0;
-        break;
-      case "vs30d":
-        cmp = pctDiff(cmA.price, cmA.avg_30d) - pctDiff(cmB.price, cmB.avg_30d);
-        if (!isFinite(cmp)) cmp = 0;
-        break;
-    }
-    return state.sealedSortDir === "desc" ? -cmp : cmp;
-  });
-  return sorted;
-}
-
-function renderSealedTable() {
-  const content = $("#content");
-  const filtered = getFilteredSortedSealed();
-  const all = state.sealedProducts;
-  const count = filtered.length;
-
-  // Type filter buttons
-  const typeCounts = {};
-  all.forEach(p => {
-    const t = p.product_type || "Other";
-    typeCounts[t] = (typeCounts[t] || 0) + 1;
-  });
-  // Sort types by count descending, but keep "all" first
-  const sortedTypes = Object.entries(typeCounts).sort((a, b) => b[1] - a[1]);
-  const typeButtons = [`<button class="rarity-btn ${state.sealedTypeFilter === "all" ? "active" : ""}" data-type="all">All <span class="rb-count">${all.length}</span></button>`]
-    .concat(
-      sortedTypes.map(([t, c]) => {
-        const active = state.sealedTypeFilter === t ? "active" : "";
-        return `<button class="rarity-btn ${active}" data-type="${escapeHtml(t)}">${escapeHtml(t)} <span class="rb-count">${c}</span></button>`;
-      })
-    )
-    .join("");
-
-  const sortIcon = (col) => {
-    if (state.sealedSortBy !== col) return "↕";
-    return state.sealedSortDir === "asc" ? "↑" : "↓";
-  };
-
-  let rows = "";
-  if (!count) {
-    rows = `<tr><td colspan="9" class="na" style="text-align:center;padding:30px">No sealed products match this filter</td></tr>`;
-  } else {
-    for (const p of filtered) {
-      const cm = p.prices?.cardmarket;
-      const vs7d = pctDiff(cm?.price, cm?.avg_7d);
-      const vs30d = pctDiff(cm?.price, cm?.avg_30d);
-      const supply = cm?.available_items;
-      const thumb = p.image_url
-        ? `<img class="sealed-thumb" src="${escapeHtml(p.image_url)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><span class="sealed-thumb-placeholder" style="display:none">◇</span>`
-        : `<span class="sealed-thumb-placeholder">◇</span>`;
-      const typeClass = typeBadgeClass(p.product_type);
-      rows += `
-        <tr data-product-id="${p.id}">
-          <td class="sealed-thumb-cell">${thumb}</td>
-          <td><strong>${escapeHtml(p.name)}</strong></td>
-          <td><span class="product-type ${typeClass}">${escapeHtml(p.product_type || "—")}</span></td>
-          <td>${escapeHtml(p.set_name || "")}</td>
-          <td class="price-eur">${fmtPrice(cm?.price, cm?.currency || "EUR")}</td>
-          <td class="price-avg">${fmtPrice(cm?.avg_7d, cm?.currency || "EUR")}</td>
-          <td class="price-avg">${fmtPrice(cm?.avg_30d, cm?.currency || "EUR")}</td>
-          <td class="num supply-cell">${supply != null ? supply : `<span class="na">—</span>`}</td>
-          <td class="pct-cell">${fmtPct(vs7d)}</td>
-          <td class="pct-cell">${fmtPct(vs30d)}</td>
-        </tr>`;
-    }
-  }
-
-  content.innerHTML = `
-    <div class="section-head">
-      <h2>Sealed Products</h2>
-      <span class="count">${count} products</span>
-      <button class="sealed-snapshot-btn" id="sealed-snapshot-btn" title="Refresh all sealed product prices from Cardmarket">Refresh prices</button>
-    </div>
-    <div class="rarity-filters">${typeButtons}</div>
-    <div class="card-table-wrap">
-      <table class="cards">
-        <thead><tr>
-          <th class="sealed-thumb-col"></th>
-          <th class="sortable" data-sort="name">Product ${sortIcon("name")}</th>
-          <th class="sortable" data-sort="type">Type ${sortIcon("type")}</th>
-          <th class="sortable" data-sort="set">Set ${sortIcon("set")}</th>
-          <th class="sortable" data-sort="price">CM Lowest ${sortIcon("price")}</th>
-          <th class="sortable" data-sort="avg7d">7D Avg ${sortIcon("avg7d")}</th>
-          <th class="sortable" data-sort="avg30d">30D Avg ${sortIcon("avg30d")}</th>
-          <th class="sortable" data-sort="supply">Available ${sortIcon("supply")}</th>
-          <th class="sortable" data-sort="vs7d">% vs 7D ${sortIcon("vs7d")}</th>
-          <th class="sortable" data-sort="vs30d">% vs 30D ${sortIcon("vs30d")}</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
+      <p class="note">CM trend is Cardmarket's price trend; “CM from” is the lowest current listing in any language or condition. Enchanted, Epic and Iconic use foil prices.</p>
     </div>`;
 
-  // Row clicks -> detail page
-  $$("#content tbody tr[data-product-id]").forEach((tr) =>
-    tr.addEventListener("click", () => openSealedProductPage(tr.dataset.productId))
-  );
-
-  // Sortable headers
-  $$("#content th.sortable").forEach((th) =>
-    th.addEventListener("click", () => {
-      const col = th.dataset.sort;
-      if (state.sealedSortBy === col) {
-        state.sealedSortDir = state.sealedSortDir === "asc" ? "desc" : "asc";
-      } else {
-        state.sealedSortBy = col;
-        state.sealedSortDir = (col === "name" || col === "type" || col === "set") ? "asc" : "desc";
-      }
-      renderSealedTable();
-    })
-  );
-
-  // Type filter buttons
-  $$("#content .rarity-btn").forEach((btn) =>
-    btn.addEventListener("click", () => {
-      state.sealedTypeFilter = btn.dataset.type;
-      renderSealedTable();
-    })
-  );
-
-  // Snapshot button
-  const snapBtn = $("#sealed-snapshot-btn");
-  if (snapBtn) {
-    snapBtn.addEventListener("click", () => triggerSealedSnapshot(snapBtn));
-  }
+  $$("th.sortable").forEach((t) => t.addEventListener("click", () => {
+    const k = t.dataset.sort;
+    if (state.sortBy === k) state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+    else { state.sortBy = k; state.sortDir = ["num", "name", "rarity"].includes(k) ? "asc" : "desc"; }
+    drawSet();
+  }));
+  $$(".chip[data-rarity]").forEach((b) => b.addEventListener("click", () => { state.rarity = b.dataset.rarity; drawSet(); }));
+  $$(".ink-btn").forEach((b) => b.addEventListener("click", () => { state.ink = b.dataset.ink; drawSet(); }));
+  const fi = $("#set-filter");
+  fi.addEventListener("input", () => {
+    state.filter = fi.value;
+    const pos = fi.selectionStart;
+    drawSet();
+    const n = $("#set-filter"); n.focus(); n.setSelectionRange(pos, pos);
+  });
+  $$("tbody tr[data-id]").forEach((tr) => {
+    const go = () => (location.hash = `#/card/${tr.dataset.id}`);
+    tr.addEventListener("click", go);
+    tr.addEventListener("keydown", (e) => e.key === "Enter" && go());
+  });
 }
 
-async function triggerSealedSnapshot(btn) {
-  // Save reference to the result element BEFORE async work, in case the
-  // content area gets re-rendered. We store result HTML on a hidden node
-  // and re-attach it after the table re-renders.
-  const originalText = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = "Refreshing…";
-
-  // Stash progress in a hidden data store so we can find it after re-render
-  state._snapshotResultHtml = `<div class="sealed-snapshot-result">Triggering snapshot…</div>`;
-
-  // Render immediately
-  _renderSnapshotResult();
-
+// ------------------------------------------------------------------ card detail
+async function renderCard(id) {
+  content.innerHTML = `<div class="page">${skeleton(4)}</div>`;
   try {
-    const data = await api(`/api/sealed/snapshot?budget=10`);
-    let logs = (data.logs || "").trim();
-    if (logs.length > 4000) logs = logs.slice(-4000);
-    const status = data.status === "ok" ? "✓ Done" : "✗ Error";
-    state._snapshotResultHtml = `<div class="sealed-snapshot-result"><strong>${status}</strong>\n${escapeHtml(logs)}</div>`;
-    // Refresh the table data
-    state.sealedView = "list";
-    state.currentSealedId = null;
-    await loadSealedProducts();
-    // Re-attach the snapshot result after the table re-renders
-    _renderSnapshotResult();
-  } catch (e) {
-    state._snapshotResultHtml = `<div class="sealed-snapshot-result"><strong>✗ Error</strong>\n${escapeHtml(e.message)}</div>`;
-    _renderSnapshotResult();
-  } finally {
-    btn.disabled = false;
-    btn.textContent = originalText;
-  }
-}
-
-function _renderSnapshotResult() {
-  const html = state._snapshotResultHtml;
-  if (!html) return;
-  const sectionHead = document.querySelector("#content .section-head");
-  if (!sectionHead) return;
-  // Remove any existing one (from a previous render)
-  sectionHead.querySelectorAll(".sealed-snapshot-result").forEach((n) => n.remove());
-  const tmp = document.createElement("div");
-  tmp.innerHTML = html;
-  const node = tmp.firstElementChild;
-  if (node) {
-    sectionHead.appendChild(node);
-  }
-}
-
-async function openSealedProductPage(productId) {
-  state.currentSealedId = productId;
-  state.sealedView = "detail";
-  window.scrollTo(0, 0);
-  await renderSealedDetail(productId);
-}
-
-async function renderSealedDetail(productId) {
-  const content = $("#content");
-  content.innerHTML = `<div class="muted">Loading sealed product…</div>`;
-  try {
-    const data = await api(`/api/sealed/${productId}`);
-    const product = data.product;
-
-    const cm = product.prices?.cardmarket || {};
-    const typeClass = typeBadgeClass(product.product_type);
-    const img = product.image_url
-      ? `<img class="sealed-detail-img" src="${escapeHtml(product.image_url)}" alt="${escapeHtml(product.name)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><div class="sealed-detail-img empty" style="display:none">No image</div>`
-      : `<div class="sealed-detail-img empty">No image</div>`;
-
-    const euOnly = cm.lowest_EU_only;
-    const externalLinks = [];
-    if (product.tcggo_url) {
-      externalLinks.push(`<a href="${escapeHtml(product.tcggo_url)}" target="_blank" rel="noopener">TCGGo ↗</a>`);
-    }
-    if (product.cardmarket_url) {
-      externalLinks.push(`<a href="${escapeHtml(product.cardmarket_url)}" target="_blank" rel="noopener">Cardmarket ↗</a>`);
-    }
-
+    const { card: c } = await api(`/cards/${encodeURIComponent(id)}`);
+    const vs30 = pctVal(c.cm_trend, c.cm_avg30);
     content.innerHTML = `
-      <div class="sealed-detail-page">
-        <button class="back-btn" id="back-btn">← Back to Sealed Products</button>
-        <div class="sealed-detail-head">
-          ${img}
-          <div class="sealed-detail-info">
-            <h2>${escapeHtml(product.name)}</h2>
-            <div class="sub">
-              <span class="product-type ${typeClass}">${escapeHtml(product.product_type || "—")}</span>
-              ${product.set_name ? ` · ${escapeHtml(product.set_name)}` : ""}
+      <div class="page">
+        <a class="back" href="#/set/${encodeURIComponent(c.set_code)}">← ${esc(c.set_name)}</a>
+        <div class="detail">
+          <div class="detail-art">${c.image_large ? `<img src="${esc(c.image_large)}" alt="${esc(c.full_name)}" />` : `<div class="art-ph">No image</div>`}</div>
+          <div class="detail-main">
+            <div class="eyebrow">${inkDot(c.ink)}${esc(c.ink || "")} · ${esc(c.type || "")}</div>
+            <h1>${esc(c.name)}</h1>
+            ${c.version ? `<div class="version">${esc(c.version)}</div>` : ""}
+            <div class="meta-row">${esc(c.set_name)} · #${esc(c.card_number)} ${rarityChip(c.rarity)}</div>
+            <div class="price-cards">
+              <div class="pcard"><div class="p-label">Cardmarket trend</div><div class="p-val eur">${money(c.cm_trend)}</div><div class="p-foot">${pct(vs30)} vs 30-day avg</div></div>
+              <div class="pcard"><div class="p-label">Cardmarket from</div><div class="p-val">${money(c.cm_low)}</div><div class="p-foot">lowest listing, any condition</div></div>
+              <div class="pcard"><div class="p-label">TCGPlayer market</div><div class="p-val usd">${money(usdBest(c), "USD")}</div><div class="p-foot">${c.usd != null && c.usd_foil != null ? `foil ${money(c.usd_foil, "USD")}` : c.usd == null && c.usd_foil != null ? "foil" : "non-foil"}</div></div>
             </div>
-            <div class="price-grid">
-              <div class="price-card">
-                <div class="pc-label">Cardmarket Lowest</div>
-                <div class="pc-value eur">${fmtPrice(cm.price, cm.currency || "EUR")}</div>
-                <div class="pc-foot">${cm.date ? `as of ${cm.date}` : "EUR · lowest listing"}</div>
-              </div>
-              <div class="price-card">
-                <div class="pc-label">7D Average</div>
-                <div class="pc-value eur">${fmtPrice(cm.avg_7d, cm.currency || "EUR")}</div>
-                <div class="pc-foot">7-day avg</div>
-              </div>
-              <div class="price-card">
-                <div class="pc-label">30D Average</div>
-                <div class="pc-value eur">${fmtPrice(cm.avg_30d, cm.currency || "EUR")}</div>
-                <div class="pc-foot">30-day avg</div>
-              </div>
-              <div class="price-card">
-                <div class="pc-label">Available</div>
-                <div class="pc-value eur">${cm.available_items != null ? cm.available_items : `<span class="na">—</span>`}</div>
-                <div class="pc-foot">listings</div>
-              </div>
+            <div class="links">
+              ${c.cm_url ? `<a class="btn" href="${esc(c.cm_url)}" target="_blank" rel="noopener">View on Cardmarket ↗</a>` : ""}
+              ${c.tcgplayer_url ? `<a class="btn ghost" href="${esc(c.tcgplayer_url)}" target="_blank" rel="noopener">View on TCGPlayer ↗</a>` : ""}
             </div>
-            ${externalLinks.length ? `<div class="sealed-external-links">${externalLinks.join("")}</div>` : ""}
           </div>
         </div>
 
-        <h3 class="chart-title">Per-Country Lowest (EUR)</h3>
-        <div class="country-grid">
-          <div class="country-card">
-            <div class="cc-label">EU Only</div>
-            <div class="cc-value">${fmtPrice(cm.lowest_EU_only, cm.currency || "EUR")}</div>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Price trend</h2>
+            <div class="seg" id="range">${["30d", "3m", "6m", "1y", "all"].map((r) => `<button data-range="${r}" class="${state.range === r ? "active" : ""}">${r.toUpperCase()}</button>`).join("")}</div>
           </div>
-          <div class="country-card">
-            <div class="cc-label">Germany</div>
-            <div class="cc-value">${fmtPrice(cm.lowest_DE, cm.currency || "EUR")}</div>
-          </div>
-          <div class="country-card">
-            <div class="cc-label">France</div>
-            <div class="cc-value">${fmtPrice(cm.lowest_FR, cm.currency || "EUR")}</div>
-          </div>
-          <div class="country-card">
-            <div class="cc-label">Italy</div>
-            <div class="cc-value">${fmtPrice(cm.lowest_IT, cm.currency || "EUR")}</div>
-          </div>
-        </div>
+          <div class="chart-box"><canvas id="chart"></canvas></div>
+          <div class="chart-note" id="chart-note"></div>
+        </section>
 
-        <h3 class="chart-title">Price Trend</h3>
-        <div class="range-toggle" id="sealed-range-toggle">
-          <button data-range="30d" class="active">30D</button>
-          <button data-range="3m">3M</button>
-          <button data-range="6m">6M</button>
-          <button data-range="1y">1Y</button>
-          <button data-range="all">All</button>
-        </div>
-        <div class="chart-wrap"><canvas id="sealed-chart"></canvas></div>
-        <div class="legend" id="sealed-legend"></div>
+        <section class="panel">
+          <div class="panel-head"><h2>Cardmarket averages</h2></div>
+          <div class="avg-bars">${[["30-day avg", c.cm_avg30], ["7-day avg", c.cm_avg7], ["1-day avg", c.cm_avg1], ["Trend", c.cm_trend], ["From", c.cm_low]].map(([l, v]) => {
+            const max = Math.max(c.cm_avg30 || 0, c.cm_avg7 || 0, c.cm_avg1 || 0, c.cm_trend || 0, c.cm_low || 0) || 1;
+            return `<div class="bar-row"><span class="b-lbl">${l}</span><span class="b-track"><span class="b-fill" style="width:${v ? Math.max(2, (v / max) * 100) : 0}%"></span></span><span class="b-val tab-num">${money(v)}</span></div>`;
+          }).join("")}</div>
+        </section>
+
+        ${c.printings.length ? `<section class="panel">
+          <div class="panel-head"><h2>Other printings</h2></div>
+          <div class="printings">${c.printings.map((p) => `
+            <a class="printing" href="#/card/${p.id}">${thumb(p, "pthumb")}<div><div class="pr-set">${esc(p.set_name)} · #${esc(p.card_number)}</div>${rarityChip(p.rarity)}<div class="pr-price">${money(p.cm_trend)} <span class="usd">${money(usdBest(p), "USD")}</span></div></div></a>`).join("")}</div>
+        </section>` : ""}
       </div>`;
-
-    // Back button
-    $("#back-btn").addEventListener("click", () => {
-      state.currentSealedId = null;
-      state.sealedView = "list";
-      renderSealedTable();
-    });
-
-    // Range toggle
-    $$("#sealed-range-toggle button").forEach((b) =>
-      b.addEventListener("click", () => {
-        $$("#sealed-range-toggle button").forEach((x) => x.classList.remove("active"));
-        b.classList.add("active");
-        state.currentRange = b.dataset.range;
-        loadSealedChart(product.id);
-      })
-    );
-
-    await loadSealedChart(product.id);
-  } catch (e) {
-    content.innerHTML = `<p class="muted">Error loading sealed product: ${escapeHtml(e.message)}</p>`;
-  }
+    const fb = [["30-day avg", c.cm_avg30], ["7-day avg", c.cm_avg7], ["1-day avg", c.cm_avg1], ["Trend now", c.cm_trend]];
+    $$("#range button").forEach((b) => b.addEventListener("click", () => {
+      state.range = b.dataset.range;
+      $$("#range button").forEach((x) => x.classList.toggle("active", x === b));
+      drawHistory(`/cards/${id}/history`, [["cm_trend", "Cardmarket trend (EUR)", "#d9ae5c"], ["cm_low", "Cardmarket from (EUR)", "#8a7a55"], ["usd", "TCGPlayer (USD)", "#7aa7e0"], ["usd_foil", "TCGPlayer foil (USD)", "#5578a8"]], fb);
+    }));
+    drawHistory(`/cards/${id}/history`, [["cm_trend", "Cardmarket trend (EUR)", "#d9ae5c"], ["cm_low", "Cardmarket from (EUR)", "#8a7a55"], ["usd", "TCGPlayer (USD)", "#7aa7e0"], ["usd_foil", "TCGPlayer foil (USD)", "#5578a8"]], fb);
+  } catch (e) { content.innerHTML = errorBox(e); }
 }
 
-async function loadSealedChart(productId) {
-  const canvas = $("#sealed-chart");
-  const legendEl = $("#sealed-legend");
-  const wrap = canvas?.parentElement;
-  if (!canvas || !wrap) return;
-
+async function drawHistory(path, series, fallback) {
+  const note = $("#chart-note");
   try {
-    const data = await api(`/api/sealed/${productId}/history?range=${state.currentRange}`);
-    const series = data.series || {};
-    const sources = SEALED_SOURCES.filter((s) => series[s.key] && series[s.key].length);
-    if (!sources.length) {
-      wrap.innerHTML = `<div class="chart-empty">No historical data yet. Daily snapshots build the trend over time.</div>`;
-      if (legendEl) legendEl.innerHTML = "";
-      return;
+    let { points } = await api(`${path}?range=${state.range}`);
+    const realCount = points.length;
+    if (realCount < 2 && fallback) {
+      // Not enough daily snapshots yet: plot Cardmarket's own rolling averages instead.
+      series = [["v", "Cardmarket (EUR)", "#d9ae5c"]];
+      points = fallback.filter(([, v]) => v != null).map(([date, v]) => ({ date, v }));
     }
-    const dateSet = new Set();
-    sources.forEach((s) => series[s.key].forEach((p) => dateSet.add(p.date)));
-    const labels = Array.from(dateSet).sort();
-    const datasets = sources.map((s) => {
-      const map = Object.fromEntries(series[s.key].map((p) => [p.date, p.price]));
-      return {
-        label: s.label,
-        data: labels.map((d) => (d in map ? map[d] : null)),
-        borderColor: s.color,
-        backgroundColor: s.color + "22",
-        tension: 0.3,
-        spanGaps: true,
-        pointRadius: 2,
-        borderWidth: 2,
-      };
-    });
+    const active = series.filter(([k]) => points.some((p) => p[k] != null));
+    const canvas = $("#chart");
+    if (!canvas) return;
     if (state.chart) state.chart.destroy();
+    await waitForChart();
     state.chart = new Chart(canvas, {
       type: "line",
-      data: { labels, datasets },
+      data: {
+        labels: points.map((p) => p.date),
+        datasets: active.map(([k, label, color]) => ({
+          label, data: points.map((p) => p[k]), borderColor: color, backgroundColor: color,
+          tension: 0.25, spanGaps: true, borderWidth: 2, pointRadius: points.length < 15 ? 4 : 0, pointHoverRadius: 5,
+        })),
+      },
       options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: "index", intersect: false },
+        responsive: true, maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
         plugins: {
-          legend: { display: false },
-          tooltip: {
-            backgroundColor: "#1a2030",
-            borderColor: "#2e3750",
-            borderWidth: 1,
-            callbacks: {
-              label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y ?? "—"}`,
-            },
-          },
+          legend: { position: "bottom", labels: { color: "#a6abc2", boxWidth: 10, boxHeight: 10, usePointStyle: true, font: { family: "General Sans", size: 12 } } },
+          tooltip: { backgroundColor: "#161a2e", borderColor: "#2b3150", borderWidth: 1, titleFont: { family: "General Sans" }, bodyFont: { family: "General Sans" },
+            callbacks: { label: (ctx) => `${ctx.dataset.label}: ${ctx.dataset.label.includes("USD") ? "$" : "€"}${ctx.parsed.y?.toFixed(2) ?? "—"}` } },
         },
         scales: {
-          x: { ticks: { color: "#5c6680", maxRotation: 0, autoSkip: true }, grid: { color: "rgba(255,255,255,0.04)" } },
-          y: { ticks: { color: "#5c6680" }, grid: { color: "rgba(255,255,255,0.06)" } },
+          x: { ticks: { color: "#6f7591", maxRotation: 0, autoSkip: true, font: { family: "General Sans" } }, grid: { color: "rgba(255,255,255,0.04)" } },
+          y: { ticks: { color: "#6f7591", font: { family: "General Sans" } }, grid: { color: "rgba(255,255,255,0.06)" }, beginAtZero: false },
         },
       },
     });
-    if (legendEl) {
-      legendEl.innerHTML = sources
-        .map((s) => `<span><span class="dot" style="background:${s.color}"></span>${s.label} (${series[s.key].length} pts)</span>`)
-        .join("");
-    }
-  } catch (e) {
-    wrap.innerHTML = `<div class="chart-empty">Error loading history: ${escapeHtml(e.message)}</div>`;
-  }
+    note.textContent = realCount < 2 && fallback
+      ? "Not enough daily snapshots yet, so this shows Cardmarket's current reference prices. A true day-by-day history builds from here, one snapshot per day."
+      : `${realCount} daily snapshot${realCount === 1 ? "" : "s"} in range.`;
+  } catch (e) { note.textContent = `Couldn't load history: ${e.message}`; }
+}
+function waitForChart() {
+  return new Promise((res) => { const t = () => (window.Chart ? res() : setTimeout(t, 50)); t(); });
 }
 
-// ---------------------------------- Boot --------------------------------- //
-window.addEventListener("DOMContentLoaded", () => {
-  loadStatus();
-  loadSets();
-  initSearch();
-  initTabs();
-});
+// ------------------------------------------------------------------ market report
+function moverList(items, { sealed = false } = {}) {
+  if (!items.length) return `<p class="muted small">Nothing moved enough to report.</p>`;
+  return `<ol class="movers">${items.map((m) => `
+    <li><a href="${sealed ? `#/sealed/${m.id}` : `#/card/${m.id}`}">
+      ${sealed ? `<span class="mthumb ph sealed-ph"></span>` : thumb(m, "mthumb")}
+      <span class="m-main"><span class="m-name">${esc(m.full_name)}</span><span class="m-sub">${sealed ? esc(m.product_type) : `${esc(m.set_name)} · ${esc(rl(m.rarity))}`}</span></span>
+      <span class="m-nums"><span class="m-now tab-num">${money(m.now)}</span><span class="m-was tab-num">from ${money(m.then)}</span></span>
+      ${pct(m.pct)}
+    </a></li>`).join("")}</ol>`;
+}
+
+async function renderMarket() {
+  content.innerHTML = `<div class="page">${skeleton(6)}</div>`;
+  try {
+    const m = await api("/market");
+    content.innerHTML = `
+      <div class="page">
+        <div class="page-head"><div><h1>Market report</h1><p class="sub">Premium rarities (Iconic, Enchanted, Epic, Legendary, Promo) between €2 and €10,000 on Cardmarket. Moves under €0.50 or 3% are ignored.</p></div></div>
+        <div class="report-grid">
+          <section class="panel"><div class="panel-head"><h2>Rising ${m.snapshot_days >= 2 ? "today" : "now"}</h2><span class="basis">${esc(m.day.basis)}</span></div>${moverList(m.day.up)}</section>
+          <section class="panel"><div class="panel-head"><h2>Falling ${m.snapshot_days >= 2 ? "today" : "now"}</h2><span class="basis">${esc(m.day.basis)}</span></div>${moverList(m.day.down)}</section>
+          <section class="panel"><div class="panel-head"><h2>Week risers</h2><span class="basis">${esc(m.week.basis)}</span></div>${moverList(m.week.up)}</section>
+          <section class="panel"><div class="panel-head"><h2>Week fallers</h2><span class="basis">${esc(m.week.basis)}</span></div>${moverList(m.week.down)}</section>
+        </div>
+        ${m.lows.length ? `<section class="panel"><div class="panel-head"><h2>At lowest tracked price</h2></div>${moverList(m.lows.map((c) => ({ ...c, now: c.cm_trend, then: c.cm_avg30, pct: pctVal(c.cm_trend, c.cm_avg30) })))}</section>` : ""}
+        <section class="panel">
+          <div class="panel-head"><h2>Most valuable cards</h2><span class="basis">Cardmarket trend</span></div>
+          <div class="top-grid">${m.top.map((c, i) => `<a class="top-card" href="#/card/${c.id}"><span class="rank">${i + 1}</span>${thumb(c, "tthumb")}<span class="t-name">${esc(c.full_name)}</span><span class="t-sub">${esc(c.set_name)}</span><span class="t-price eur">${money(c.cm_trend)}</span></a>`).join("")}</div>
+        </section>
+        <div class="report-grid">
+          <section class="panel"><div class="panel-head"><h2>Booster box ladder</h2><span class="basis">English booster boxes, trend price</span></div>
+            <div class="ladder">${(() => { const max = Math.max(...m.booster_ladder.map((b) => b.trend || 0)) || 1; return m.booster_ladder.map((b) => `<a class="bar-row" href="#/sealed/${b.id}"><span class="b-lbl">${esc(b.set_name || b.name.replace(/ Booster Box$/, ""))}</span><span class="b-track"><span class="b-fill" style="width:${Math.max(2, ((b.trend || 0) / max) * 100)}%"></span></span><span class="b-val tab-num">${money(b.trend)}</span></a>`).join(""); })()}</div>
+          </section>
+          <section class="panel"><div class="panel-head"><h2>Sealed movers</h2><span class="basis">${esc(m.sealed_movers.basis)} · boxes, troves, gift & collector sets</span></div>
+            <h3 class="mini">Up</h3>${moverList(m.sealed_movers.up, { sealed: true })}
+            <h3 class="mini">Down</h3>${moverList(m.sealed_movers.down, { sealed: true })}
+          </section>
+        </div>
+      </div>`;
+  } catch (e) { content.innerHTML = errorBox(e); }
+}
+
+// ------------------------------------------------------------------ sealed
+async function renderSealed() {
+  content.innerHTML = `<div class="page">${skeleton()}</div>`;
+  try {
+    if (!state.sealed) state.sealed = await api("/sealed");
+    drawSealed();
+  } catch (e) { content.innerHTML = errorBox(e); }
+}
+
+function drawSealed() {
+  const { products, types } = state.sealed;
+  const f = state.sealedFilter.toLowerCase();
+  const key = { name: (p) => p.name, trend: (p) => p.trend, low: (p) => p.low, avg: (p) => p.avg, vsavg: (p) => pctVal(p.trend, p.avg), added: (p) => p.date_added }[state.sealedSort];
+  const list = products
+    .filter((p) => (state.sealedType === "all" || p.product_type === state.sealedType) && (!f || p.name.toLowerCase().includes(f)))
+    .sort((a, b) => {
+      const x = key(a), y = key(b);
+      if (x == null) return 1; if (y == null) return -1;
+      const c = typeof x === "string" ? x.localeCompare(y) : x - y;
+      return state.sealedDir === "asc" ? c : -c;
+    });
+  const arrow = (k) => state.sealedSort === k ? (state.sealedDir === "asc" ? "↑" : "↓") : "";
+  const th = (k, l, cls = "") => `<th class="sortable ${cls}" data-sort="${k}">${l}<span class="arrow">${arrow(k)}</span></th>`;
+  const shown = types.filter((t) => t.n >= 2);
+  content.innerHTML = `
+    <div class="page">
+      <div class="page-head"><div><h1>Sealed products</h1><p class="sub">${products.length} Lorcana boxes, packs, decks and sets on Cardmarket.</p></div></div>
+      <div class="toolbar">
+        <div class="chips">${[{ product_type: "all", n: products.length }, ...shown].map((t) => `<button class="chip ${state.sealedType === t.product_type ? "active" : ""}" data-type="${esc(t.product_type)}">${t.product_type === "all" ? "All" : esc(t.product_type)}<span class="cnt">${t.n}</span></button>`).join("")}</div>
+        <div class="toolbar-right"><input class="filter" id="sealed-filter" type="search" placeholder="Filter products" value="${esc(state.sealedFilter)}" aria-label="Filter sealed products" /></div>
+      </div>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead><tr>${th("name", "Product")}<th class="hide-sm">Type</th>${th("trend", "Trend", "num")}${th("low", "From", "num")}${th("avg", "Avg sell", "num hide-sm")}${th("vsavg", "Trend vs avg", "num hide-sm")}${th("added", "Listed", "num hide-md")}</tr></thead>
+          <tbody>${list.map((p) => `
+            <tr data-id="${p.id}" tabindex="0">
+              <td class="c-name no-ink"><div class="nm"><span>${esc(p.name)}</span></div>${p.set_name ? `<div class="ver">${esc(p.set_name)}</div>` : ""}</td>
+              <td class="hide-sm"><span class="type-chip">${esc(p.product_type)}</span></td>
+              <td class="num eur strong">${money(p.trend)}</td>
+              <td class="num">${money(p.low)}</td>
+              <td class="num hide-sm">${money(p.avg)}</td>
+              <td class="num hide-sm">${pct(pctVal(p.trend, p.avg))}</td>
+              <td class="num hide-md muted">${p.date_added ? p.date_added.slice(0, 7) : ""}</td>
+            </tr>`).join("") || `<tr><td colspan="7" class="empty-row">No products match.</td></tr>`}</tbody>
+        </table>
+      </div>
+    </div>`;
+  $$("th.sortable").forEach((t) => t.addEventListener("click", () => {
+    const k = t.dataset.sort;
+    if (state.sealedSort === k) state.sealedDir = state.sealedDir === "asc" ? "desc" : "asc";
+    else { state.sealedSort = k; state.sealedDir = k === "name" ? "asc" : "desc"; }
+    drawSealed();
+  }));
+  $$(".chip[data-type]").forEach((b) => b.addEventListener("click", () => { state.sealedType = b.dataset.type; drawSealed(); }));
+  const fi = $("#sealed-filter");
+  fi.addEventListener("input", () => { state.sealedFilter = fi.value; const pos = fi.selectionStart; drawSealed(); const n = $("#sealed-filter"); n.focus(); n.setSelectionRange(pos, pos); });
+  $$("tbody tr[data-id]").forEach((tr) => {
+    const go = () => (location.hash = `#/sealed/${tr.dataset.id}`);
+    tr.addEventListener("click", go);
+    tr.addEventListener("keydown", (e) => e.key === "Enter" && go());
+  });
+}
+
+async function renderSealedDetail(id) {
+  content.innerHTML = `<div class="page">${skeleton(4)}</div>`;
+  try {
+    const { product: p } = await api(`/sealed/${encodeURIComponent(id)}`);
+    content.innerHTML = `
+      <div class="page">
+        <a class="back" href="#/sealed">← Sealed products</a>
+        <div class="page-head"><div><div class="eyebrow">${esc(p.product_type)}${p.set_name ? ` · ${esc(p.set_name)}` : ""}</div><h1>${esc(p.name)}</h1></div></div>
+        <div class="price-cards wide">
+          <div class="pcard"><div class="p-label">Trend</div><div class="p-val eur">${money(p.trend)}</div><div class="p-foot">${pct(pctVal(p.trend, p.avg))} vs avg sell</div></div>
+          <div class="pcard"><div class="p-label">From</div><div class="p-val">${money(p.low)}</div><div class="p-foot">lowest listing</div></div>
+          <div class="pcard"><div class="p-label">Avg sell price</div><div class="p-val">${money(p.avg)}</div><div class="p-foot">Cardmarket average</div></div>
+        </div>
+        <div class="links"><a class="btn" href="${esc(p.cm_url)}" target="_blank" rel="noopener">View on Cardmarket ↗</a></div>
+        <section class="panel">
+          <div class="panel-head"><h2>Price trend</h2>
+            <div class="seg" id="range">${["30d", "3m", "6m", "1y", "all"].map((r) => `<button data-range="${r}" class="${state.range === r ? "active" : ""}">${r.toUpperCase()}</button>`).join("")}</div></div>
+          <div class="chart-box"><canvas id="chart"></canvas></div>
+          <div class="chart-note" id="chart-note"></div>
+        </section>
+      </div>`;
+    const ser = [["trend", "Trend (EUR)", "#d9ae5c"], ["low", "From (EUR)", "#8a7a55"]];
+    $$("#range button").forEach((b) => b.addEventListener("click", () => {
+      state.range = b.dataset.range;
+      $$("#range button").forEach((x) => x.classList.toggle("active", x === b));
+      drawHistory(`/sealed/${id}/history`, ser, [["Lowest listing", p.low], ["Avg sell price", p.avg], ["Trend now", p.trend]]);
+    }));
+    drawHistory(`/sealed/${id}/history`, ser, [["Lowest listing", p.low], ["Avg sell price", p.avg], ["Trend now", p.trend]]);
+  } catch (e) { content.innerHTML = errorBox(e); }
+}
+
+// ------------------------------------------------------------------ global search
+let timer;
+function initSearch() {
+  const input = $("#search"), box = $("#search-results");
+  input.addEventListener("input", () => {
+    clearTimeout(timer);
+    const v = input.value.trim();
+    if (v.length < 2) { box.hidden = true; return; }
+    timer = setTimeout(async () => {
+      try {
+        const { results } = await api(`/search?q=${encodeURIComponent(v)}`);
+        box.innerHTML = results.length ? results.map((c) => `
+          <li><a href="#/card/${c.id}">${thumb(c, "sthumb")}<span class="s-main"><span class="s-name">${esc(c.full_name)}</span><span class="s-sub">${esc(c.set_name)} · #${esc(c.card_number)} · ${esc(rl(c.rarity))}</span></span><span class="s-price">${money(c.cm_trend)}</span></a></li>`).join("")
+          : `<li class="none">No cards found</li>`;
+        box.hidden = false;
+      } catch { box.hidden = true; }
+    }, 180);
+  });
+  box.addEventListener("click", (e) => { if (e.target.closest("a")) { box.hidden = true; input.value = ""; } });
+  document.addEventListener("click", (e) => { if (!e.target.closest(".search-wrap")) box.hidden = true; });
+  input.addEventListener("keydown", (e) => { if (e.key === "Escape") { box.hidden = true; input.blur(); } });
+}
+
+initSearch();
+loadStatus();
+setInterval(loadStatus, 120000);
+route();
