@@ -13,7 +13,7 @@ const state = {
   range: "all", chart: null, status: null,
 };
 
-const RARITY_ORDER = { Iconic: 0, Enchanted: 1, Epic: 2, Legendary: 3, Super_rare: 4, Rare: 5, Uncommon: 6, Common: 7, Promo: 8 };
+const RARITY_ORDER = { Iconic: 0, Enchanted: 1, Epic: 2, Legendary: 3, Super_rare: 4, Rare: 5, Uncommon: 6, Common: 7, Promo: 8, Quest: 9, Oversized: 10 };
 const RARITY_LABEL = { Super_rare: "Super Rare" };
 const INKS = ["Amber", "Amethyst", "Emerald", "Ruby", "Sapphire", "Steel"];
 const rl = (r) => RARITY_LABEL[r] || r || "—";
@@ -184,7 +184,7 @@ function drawSet() {
     <div class="page">
       <a class="back" href="#/">← All sets</a>
       <div class="page-head">
-        <div><h1>${esc(set.name)}</h1><p class="sub">Set ${esc(set.code)} · ${set.release_date ? new Date(set.release_date).toLocaleDateString("en-IE", { day: "numeric", month: "long", year: "numeric" }) : ""}</p></div>
+        <div><h1>${esc(set.name)}</h1><p class="sub">${set.code ? `Set ${esc(set.code)} · ` : ""}${set.release_date ? new Date(set.release_date).toLocaleDateString("en-IE", { day: "numeric", month: "long", year: "numeric" }) : ""}</p></div>
       </div>
       <div class="kpis">
         <div class="kpi"><div class="k-label">Cards</div><div class="k-val tab-num">${cards.length}</div><div class="k-foot">${priced} with Cardmarket price</div></div>
