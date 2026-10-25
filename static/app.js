@@ -140,7 +140,7 @@ function sortedCards() {
   const key = {
     num: (c) => c.num_sort, name: (c) => c.full_name, rarity: (c) => RARITY_ORDER[c.rarity] ?? 99,
     trend: (c) => c.cm_trend, low: (c) => c.cm_low, avg7: (c) => c.cm_avg7, avg30: (c) => c.cm_avg30,
-    vs30: (c) => pctVal(c.cm_trend, c.cm_avg30), usd: usdBest, foil: (c) => c.usd_foil,
+    vs30: (c) => pctVal(c.cm_trend, c.cm_avg30), usd: usdBest,
   }[state.sortBy];
   list = [...list].sort((a, b) => {
     const x = key(a), y = key(b);
@@ -177,8 +177,7 @@ function drawSet() {
       <td class="num hide-sm">${money(c.cm_avg30)}</td>
       <td class="num hide-sm">${pct(pctVal(c.cm_trend, c.cm_avg30))}</td>
       <td class="num usd">${money(c.usd, c.usd_currency)}</td>
-      <td class="num usd hide-md">${money(c.usd_foil, c.usd_currency)}</td>
-    </tr>`).join("") || `<tr><td colspan="11" class="empty-row">No cards match these filters.</td></tr>`;
+    </tr>`).join("") || `<tr><td colspan="10" class="empty-row">No cards match these filters.</td></tr>`;
 
   content.innerHTML = `
     <div class="page">
@@ -202,7 +201,7 @@ function drawSet() {
           <thead><tr>
             <th class="c-thumb"></th>${th("num", "#")}${th("name", "Card")}${th("rarity", "Rarity", "hide-sm")}
             ${th("trend", "CM price", "num")}${th("low", "CM from", "num hide-md")}${th("avg7", "7D avg", "num hide-md")}${th("avg30", "30D avg", "num hide-sm")}${th("vs30", "vs 30D", "num hide-sm")}
-            ${th("usd", "TCGP", "num")}${th("foil", "TCGP foil", "num hide-md")}
+            ${th("usd", "TCGP", "num")}
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -269,8 +268,8 @@ async function renderCard(id) {
 
         <section class="panel">
           <div class="panel-head"><h2>Cardmarket averages</h2></div>
-          <div class="avg-bars">${[["30-day avg", c.cm_avg30], ["7-day avg", c.cm_avg7], ["1-day avg", c.cm_avg1], ["Lowest NM", c.cm_trend], ["From", c.cm_low]].map(([l, v]) => {
-            const max = Math.max(c.cm_avg30 || 0, c.cm_avg7 || 0, c.cm_avg1 || 0, c.cm_trend || 0, c.cm_low || 0) || 1;
+          <div class="avg-bars">${[["30-day avg", c.cm_avg30], ["7-day avg", c.cm_avg7], ["Lowest NM", c.cm_trend], ["From", c.cm_low]].map(([l, v]) => {
+            const max = Math.max(c.cm_avg30 || 0, c.cm_avg7 || 0, c.cm_trend || 0, c.cm_low || 0) || 1;
             return `<div class="bar-row"><span class="b-lbl">${l}</span><span class="b-track"><span class="b-fill" style="width:${v ? Math.max(2, (v / max) * 100) : 0}%"></span></span><span class="b-val tab-num">${money(v)}</span></div>`;
           }).join("")}</div>
         </section>
@@ -281,7 +280,7 @@ async function renderCard(id) {
             <a class="printing" href="#/card/${p.id}">${thumb(p, "pthumb")}<div><div class="pr-set">${esc(p.set_name)} · #${esc(p.card_number)}</div>${rarityChip(p.rarity)}<div class="pr-price">${money(p.cm_trend)} <span class="usd">${money(usdBest(p), p.usd_currency)}</span></div></div></a>`).join("")}</div>
         </section>` : ""}
       </div>`;
-    const fb = [["30-day avg", c.cm_avg30], ["7-day avg", c.cm_avg7], ["1-day avg", c.cm_avg1], ["Trend now", c.cm_trend]];
+    const fb = [["30-day avg", c.cm_avg30], ["7-day avg", c.cm_avg7], ["Lowest now", c.cm_trend]];
     $$("#range button").forEach((b) => b.addEventListener("click", () => {
       state.range = b.dataset.range;
       $$("#range button").forEach((x) => x.classList.toggle("active", x === b));
@@ -468,9 +467,9 @@ async function renderSealedDetail(id) {
     $$("#range button").forEach((b) => b.addEventListener("click", () => {
       state.range = b.dataset.range;
       $$("#range button").forEach((x) => x.classList.toggle("active", x === b));
-      drawHistory(`/sealed/${id}/history`, ser, [["Lowest listing", p.low], ["Avg sell price", p.avg], ["Trend now", p.trend]]);
+      drawHistory(`/sealed/${id}/history`, ser, [["Lowest listing", p.low], ["Avg sell price", p.avg], ["Lowest now", p.trend]]);
     }));
-    drawHistory(`/sealed/${id}/history`, ser, [["Lowest listing", p.low], ["Avg sell price", p.avg], ["Trend now", p.trend]]);
+    drawHistory(`/sealed/${id}/history`, ser, [["Lowest listing", p.low], ["Avg sell price", p.avg], ["Lowest now", p.trend]]);
   } catch (e) { content.innerHTML = errorBox(e); }
 }
 
